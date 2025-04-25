@@ -3,13 +3,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('currentYear').textContent = new Date().getFullYear();
     
     // Load ports and container types
-    try {
-        await loadPorts();
-        await loadContainerTypes();
-        console.log('Ports and container types loaded successfully');
-    } catch (error) {
-        console.error('Error during initial data loading:', error);
-    }
+    await loadPorts();
+    await loadContainerTypes();
     
     // Set up form submission
     const form = document.getElementById('calculatorForm');
@@ -19,27 +14,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Load ports from API
 async function loadPorts() {
     try {
-        console.log('Fetching ports...');
         const response = await fetch('/api/ports');
         if (!response.ok) {
-            throw new Error(`Failed to fetch ports: ${response.status} ${response.statusText}`);
+            throw new Error('Failed to fetch ports');
         }
         
         const ports = await response.json();
-        console.log(`Received ${ports.length} ports from server`);
-        
-        if (!Array.isArray(ports) || ports.length === 0) {
-            console.warn('No ports received from server or invalid format');
-            throw new Error('No ports available');
-        }
         
         // Group ports by region
         const portsByRegion = {};
         ports.forEach(port => {
-            if (!port.region) {
-                port.region = 'Other'; // Default region if none specified
-            }
-            
             if (!portsByRegion[port.region]) {
                 portsByRegion[port.region] = [];
             }
@@ -49,11 +33,6 @@ async function loadPorts() {
         // Populate origin and destination dropdowns
         const originSelect = document.getElementById('origin');
         const destinationSelect = document.getElementById('destination');
-        
-        if (!originSelect || !destinationSelect) {
-            console.error('Port select elements not found in DOM');
-            throw new Error('Port select elements not found');
-        }
         
         // Clear existing options except the first one
         originSelect.innerHTML = '<option value="">Select origin port</option>';
@@ -71,63 +50,35 @@ async function loadPorts() {
                 // Create option for origin
                 const originOption = document.createElement('option');
                 originOption.value = port.id;
-                originOption.textContent = `${port.name || 'Unknown'}, ${port.country || 'Unknown'} (${port.id})`;
+                originOption.textContent = `${port.name}, ${port.country} (${port.id})`;
                 originGroup.appendChild(originOption);
                 
                 // Create option for destination
                 const destinationOption = document.createElement('option');
                 destinationOption.value = port.id;
-                destinationOption.textContent = `${port.name || 'Unknown'}, ${port.country || 'Unknown'} (${port.id})`;
+                destinationOption.textContent = `${port.name}, ${port.country} (${port.id})`;
                 destinationGroup.appendChild(destinationOption);
             });
             
             originSelect.appendChild(originGroup);
             destinationSelect.appendChild(destinationGroup);
         });
-        
-        console.log('Ports loaded successfully');
     } catch (error) {
         console.error('Error loading ports:', error);
-        // Display error message on page instead of alert
-        const errorElement = document.createElement('div');
-        errorElement.className = 'alert alert-danger';
-        errorElement.textContent = 'Failed to load ports. Please refresh the page and try again.';
-        
-        const formElement = document.getElementById('calculatorForm');
-        if (formElement) {
-            formElement.prepend(errorElement);
-        }
-        
-        throw error; // Re-throw to handle in the calling function
+        alert('Failed to load ports. Please refresh the page and try again.');
     }
 }
 
 // Load container types from API
 async function loadContainerTypes() {
     try {
-        console.log('Fetching container types...');
         const response = await fetch('/api/container-types');
         if (!response.ok) {
-            throw new Error(`Failed to fetch container types: ${response.status} ${response.statusText}`);
+            throw new Error('Failed to fetch container types');
         }
         
         const containerTypes = await response.json();
-        console.log(`Received ${containerTypes.length} container types from server`);
-        
-        if (!Array.isArray(containerTypes) || containerTypes.length === 0) {
-            console.warn('No container types received from server or invalid format');
-            // If no container types from API, use default ones
-            console.log('Using default container types');
-            useDefaultContainerTypes();
-            return;
-        }
-        
         const containerTypeSelect = document.getElementById('containerType');
-        
-        if (!containerTypeSelect) {
-            console.error('Container type select element not found in DOM');
-            throw new Error('Container type select element not found');
-        }
         
         // Clear existing options except the first one
         containerTypeSelect.innerHTML = '<option value="">Select container type</option>';
@@ -136,47 +87,13 @@ async function loadContainerTypes() {
         containerTypes.forEach(containerType => {
             const option = document.createElement('option');
             option.value = containerType.id;
-            option.textContent = `${containerType.name} - ${containerType.description || ''}`;
+            option.textContent = `${containerType.name} - ${containerType.description}`;
             containerTypeSelect.appendChild(option);
         });
-        
-        console.log('Container types loaded successfully');
     } catch (error) {
         console.error('Error loading container types:', error);
-        // Use default container types as fallback
-        useDefaultContainerTypes();
-        throw error; // Re-throw to handle in the calling function
+        alert('Failed to load container types. Please refresh the page and try again.');
     }
-}
-
-// Fallback function to use default container types
-function useDefaultContainerTypes() {
-    const defaultContainerTypes = [
-        { id: '20DV', name: '20DV', description: '20ft Dry Van' },
-        { id: '40DV', name: '40DV', description: '40ft Dry Van' },
-        { id: '40HC', name: '40HC', description: '40ft High Cube' },
-        { id: '45HC', name: '45HC', description: '45ft High Cube' }
-    ];
-    
-    const containerTypeSelect = document.getElementById('containerType');
-    
-    if (!containerTypeSelect) {
-        console.error('Container type select element not found in DOM');
-        return;
-    }
-    
-    // Clear existing options except the first one
-    containerTypeSelect.innerHTML = '<option value="">Select container type</option>';
-    
-    // Add default container types
-    defaultContainerTypes.forEach(containerType => {
-        const option = document.createElement('option');
-        option.value = containerType.id;
-        option.textContent = `${containerType.name} - ${containerType.description}`;
-        containerTypeSelect.appendChild(option);
-    });
-    
-    console.log('Default container types loaded as fallback');
 }
 
 // Handle form submission
@@ -191,29 +108,20 @@ async function handleFormSubmit(event) {
     submitButton.textContent = 'Calculating...';
     submitButton.disabled = true;
     
-    // Clear any previous error messages
-    const previousError = form.querySelector('.alert');
-    if (previousError) {
-        previousError.remove();
-    }
-    
     try {
         // Get form data
         const formData = new FormData(form);
         const data = {
-            origin: formData.get('origin'),
-            destination: formData.get('destination'),
+            originPort: formData.get('origin'),
+            destinationPort: formData.get('destination'),
             containerType: formData.get('containerType'),
+            weight: 20000, // Добавляем стандартный вес 20 тонн
             email: formData.get('email')
         };
         
-        // Validate form data
-        if (!data.origin || !data.destination || !data.containerType || !data.email) {
-            throw new Error('Please fill in all required fields');
-        }
+        console.log('Sending data to API:', data);
         
         // Call API to calculate rate
-        console.log('Sending calculation request:', data);
         const response = await fetch('/api/calculate', {
             method: 'POST',
             headers: {
@@ -223,30 +131,17 @@ async function handleFormSubmit(event) {
         });
         
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Failed to calculate rate: ${response.status} ${response.statusText} - ${errorText}`);
+            const errorData = await response.json();
+            throw new Error(`Failed to calculate rate: ${response.status} - ${JSON.stringify(errorData)}`);
         }
         
         const result = await response.json();
-        console.log('Received calculation result:', result);
         
         // Display results
         displayResults(data, result);
     } catch (error) {
-        console.error('Error during calculation:', error);
-        
-        // Display error message on page
-        const errorElement = document.createElement('div');
-        errorElement.className = 'alert alert-danger';
-        errorElement.textContent = error.message || 'An error occurred while calculating the rate. Please try again.';
-        
-        form.prepend(errorElement);
-        
-        // Hide results if they were previously shown
-        const resultContainer = document.getElementById('resultContainer');
-        if (resultContainer) {
-            resultContainer.classList.add('hidden');
-        }
+        console.error('Error:', error);
+        alert(`An error occurred while calculating the rate: ${error.message}`);
     } finally {
         // Reset button
         submitButton.textContent = originalButtonText;
@@ -265,30 +160,28 @@ function displayResults(data, result) {
     const destinationOption = destinationSelect.options[destinationSelect.selectedIndex];
     const containerTypeOption = containerTypeSelect.options[containerTypeSelect.selectedIndex];
     
-    if (!originOption || !destinationOption || !containerTypeOption) {
-        console.error('Selected options not found');
-        return;
-    }
-    
     // Update display elements
     document.getElementById('routeDisplay').textContent = 
         `${originOption.textContent.split(' (')[0]} → ${destinationOption.textContent.split(' (')[0]}`;
     document.getElementById('containerDisplay').textContent = containerTypeOption.textContent.split(' - ')[0];
     document.getElementById('dateDisplay').textContent = new Date().toLocaleDateString();
     
-    document.getElementById('minRate').textContent = `$${result.min_rate || 0}`;
-    document.getElementById('maxRate').textContent = `$${result.max_rate || 0}`;
-    document.getElementById('avgRate').textContent = `$${result.rate || 0}`;
+    // Используем правильные имена свойств из ответа API
+    document.getElementById('minRate').textContent = `$${result.minRate || result.min_rate}`;
+    document.getElementById('maxRate').textContent = `$${result.maxRate || result.max_rate}`;
+    document.getElementById('avgRate').textContent = `$${result.rate}`;
     
     // Calculate position of average rate indicator
-    const range = (result.max_rate || 0) - (result.min_rate || 0);
-    const position = range > 0 ? (((result.rate || 0) - (result.min_rate || 0)) / range) * 100 : 50;
+    const minRate = result.minRate || result.min_rate;
+    const maxRate = result.maxRate || result.max_rate;
+    const range = maxRate - minRate;
+    const position = range > 0 ? ((result.rate - minRate) / range) * 100 : 50;
     document.getElementById('rateIndicator').style.width = `${position}%`;
     
-    document.getElementById('sourceCount').textContent = result.source_count || 0;
+    document.getElementById('sourceCount').textContent = result.sourceCount || result.source_count;
     
     // Display reliability as percentage
-    const reliabilityPercent = Math.round((result.reliability || 0) * 100);
+    const reliabilityPercent = Math.round((result.reliability || 0.7) * 100);
     document.getElementById('reliability').textContent = `${reliabilityPercent}%`;
     
     // Show result container
