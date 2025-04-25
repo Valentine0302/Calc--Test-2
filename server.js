@@ -1,5 +1,5 @@
-// Обновленный файл server.js с исправлениями для расчета ставок, округления значений и доступа к админ-панели
-// Включает расширенную базу данных портов и исправленные параметры SSL для подключения к базе данных
+// Обновленный server.js с интеграцией модулей для улучшенного расчета ставок фрахта
+// Включает кэширование данных для оптимизации производительности
 
 import express from 'express';
 import path from 'path';
@@ -7,8 +7,10 @@ import { fileURLToPath } from 'url';
 import pg from 'pg';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import dns from 'dns';
 import { promisify } from 'util';
+
+// Импорт модулей для расчета ставок фрахта
+import freightCalculator from './freight_calculator.js';
 
 // Load environment variables
 dotenv.config();
@@ -36,6 +38,13 @@ const pool = new Pool({
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Кэш для данных о ставках фрахта
+const rateCache = {
+  lastUpdate: null,
+  updateInterval: 3600000, // 1 час в миллисекундах
+  isUpdating: false
+};
+
 // Initialize database tables if they don't exist
 async function initializeTables() {
   try {
@@ -51,7 +60,8 @@ async function initializeTables() {
         min_rate NUMERIC NOT NULL,
         max_rate NUMERIC NOT NULL,
         reliability NUMERIC NOT NULL,
-        source_count INTEGER NOT NULL
+        source_count INTEGER NOT NULL,
+        sources TEXT
       );
 
       CREATE TABLE IF NOT EXISTS ports (
@@ -85,6 +95,14 @@ async function initializeTables() {
         id SERIAL PRIMARY KEY,
         email VARCHAR(255) NOT NULL UNIQUE,
         verified_at TIMESTAMP NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS freight_indices_update_log (
+        id SERIAL PRIMARY KEY,
+        source VARCHAR(50) NOT NULL,
+        update_time TIMESTAMP NOT NULL DEFAULT NOW(),
+        status VARCHAR(20) NOT NULL,
+        message TEXT
       );
     `);
     
@@ -120,6 +138,61 @@ async function initializeTables() {
   } catch (error) {
     console.error('Error initializing database tables:', error);
     return false;
+  }
+}
+
+// Функция для обновления данных о ставках фрахта
+async function updateFreightRatesData() {
+  // Проверка, не выполняется ли уже обновление
+  if (rateCache.isUpdating) {
+    console.log('Update already in progress, skipping');
+    return;
+  }
+  
+  // Проверка, нужно ли обновлять данные
+  const now = Date.now();
+  if (rateCache.lastUpdate && (now - rateCache.lastUpdate < rateCache.updateInterval)) {
+    console.log('Using cached freight rates data');
+    return;
+  }
+  
+  try {
+    // Установка флага обновления
+    rateCache.isUpdating = true;
+    
+    // Логирование начала обновления
+    await pool.query(
+      `INSERT INTO freight_indices_update_log (source, status, message) 
+       VALUES ($1, $2, $3)`,
+      ['ALL', 'STARTED', 'Starting update of all freight indices']
+    );
+    
+    // Обновление данных из всех источников
+    await freightCalculator.updateAllSourcesData();
+    
+    // Обновление времени последнего обновления
+    rateCache.lastUpdate = now;
+    
+    // Логирование успешного обновления
+    await pool.query(
+      `INSERT INTO freight_indices_update_log (source, status, message) 
+       VALUES ($1, $2, $3)`,
+      ['ALL', 'COMPLETED', 'Successfully updated all freight indices']
+    );
+    
+    console.log('Freight rates data updated successfully');
+  } catch (error) {
+    console.error('Error updating freight rates data:', error);
+    
+    // Логирование ошибки
+    await pool.query(
+      `INSERT INTO freight_indices_update_log (source, status, message) 
+       VALUES ($1, $2, $3)`,
+      ['ALL', 'ERROR', `Error updating freight indices: ${error.message}`]
+    );
+  } finally {
+    // Сброс флага обновления
+    rateCache.isUpdating = false;
   }
 }
 
@@ -164,29 +237,30 @@ app.post('/api/calculate', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email format' });
     }
     
-    // Calculate rate (simplified example)
-    const baseRate = Math.round(Math.random() * 2000 + 1000);
-    const reliability = Math.round((Math.random() * 0.3 + 0.7) * 100) / 100;
-    const sourceCount = Math.floor(Math.random() * 5) + 3;
-    const minRate = Math.round(baseRate * 0.8);
-    const maxRate = Math.round(baseRate * 1.2);
+    // Обновление данных о ставках фрахта (если необходимо)
+    await updateFreightRatesData();
+    
+    // Расчет ставки с использованием улучшенного алгоритма
+    const result = await freightCalculator.calculateFreightRate(origin, destination, containerType);
     
     // Save calculation to history
     await pool.query(
       `INSERT INTO calculation_history 
-       (timestamp, email, origin, destination, container_type, rate, min_rate, max_rate, reliability, source_count)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [email, origin, destination, containerType, baseRate, minRate, maxRate, reliability, sourceCount]
+       (timestamp, email, origin, destination, container_type, rate, min_rate, max_rate, reliability, source_count, sources)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        email, 
+        origin, 
+        destination, 
+        containerType, 
+        result.rate, 
+        result.minRate, 
+        result.maxRate, 
+        result.reliability, 
+        result.sourceCount,
+        result.sources ? result.sources.join(', ') : 'Base calculation'
+      ]
     );
-    
-    // Create result object with properly formatted values
-    const result = {
-      rate: baseRate,
-      minRate: minRate,
-      maxRate: maxRate,
-      reliability: reliability,
-      sourceCount: sourceCount
-    };
     
     console.log('Calculation result:', result);
     
