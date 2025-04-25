@@ -21,9 +21,9 @@ import istfixScraper from './istfix_scraper.js';
 import ctsScraper from './cts_scraper.js';
 
 // Импорт модулей анализа и расчета
-import seasonalityAnalyzer from './updated_seasonality_analyzer.js';
+import seasonalityAnalyzer from './seasonality_analyzer.js';
 import fuelSurchargeCalculator from './fuel_surcharge_calculator.js';
-import enhancedFreightCalculator from './updated_enhanced_freight_calculator.js';
+import enhancedFreightCalculator from './freight_calculator.js';
 
 // Загрузка переменных окружения
 dotenv.config();
@@ -521,7 +521,7 @@ function validateEmail(email) {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Инициализация системы при запуске
+  // Инициализация системы при запуске сервера
   await initializeSystem();
 });
 
