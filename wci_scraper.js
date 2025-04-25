@@ -2,7 +2,7 @@
 // Использует публично доступные данные индекса WCI
 
 import axios from 'axios';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 
