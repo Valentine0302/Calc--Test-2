@@ -1,4 +1,4 @@
-// Обновленный файл server.js с исправлениями для расчета ставок и доступа к админ-панели
+// Обновленный файл server.js с исправлениями для расчета ставок, округления значений и доступа к админ-панели
 // Включает расширенную базу данных портов и исправленные параметры SSL для подключения к базе данных
 
 import express from 'express';
@@ -148,25 +148,28 @@ app.get('/api/container-types', async (req, res) => {
 // API endpoint to calculate freight rate
 app.post('/api/calculate', async (req, res) => {
   try {
+    console.log('Received calculation request:', req.body);
     const { email, origin, destination, containerType } = req.body;
     
     // Validate input
     if (!email || !origin || !destination || !containerType) {
+      console.log('Validation failed: Missing required fields');
       return res.status(400).json({ error: 'All fields are required' });
     }
     
     // Simple email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
+      console.log('Validation failed: Invalid email format');
       return res.status(400).json({ error: 'Invalid email format' });
     }
     
     // Calculate rate (simplified example)
-    const baseRate = Math.random() * 2000 + 1000;
-    const reliability = Math.random() * 0.3 + 0.7;
+    const baseRate = Math.round(Math.random() * 2000 + 1000);
+    const reliability = Math.round((Math.random() * 0.3 + 0.7) * 100) / 100;
     const sourceCount = Math.floor(Math.random() * 5) + 3;
-    const minRate = baseRate * 0.8;
-    const maxRate = baseRate * 1.2;
+    const minRate = Math.round(baseRate * 0.8);
+    const maxRate = Math.round(baseRate * 1.2);
     
     // Save calculation to history
     await pool.query(
@@ -176,14 +179,19 @@ app.post('/api/calculate', async (req, res) => {
       [email, origin, destination, containerType, baseRate, minRate, maxRate, reliability, sourceCount]
     );
     
+    // Create result object with properly formatted values
+    const result = {
+      rate: baseRate,
+      minRate: minRate,
+      maxRate: maxRate,
+      reliability: reliability,
+      sourceCount: sourceCount
+    };
+    
+    console.log('Calculation result:', result);
+    
     // Return calculation result
-    res.json({
-      rate: baseRate.toFixed(2),
-      minRate: minRate.toFixed(2),
-      maxRate: maxRate.toFixed(2),
-      reliability: reliability.toFixed(2),
-      sourceCount
-    });
+    res.json(result);
   } catch (error) {
     console.error('Error calculating freight rate:', error);
     res.status(500).json({ error: 'Failed to calculate freight rate' });
