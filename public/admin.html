@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TSP Transport OÜ - Admin Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="min-h-screen bg-gradient-to-b from-gray-50 to-white">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-blue-800 mb-2">TSP Transport OÜ</h1>
+            <h2 class="text-xl text-gray-600">Admin Dashboard</h2>
+        </header>
+        
+        <div class="max-w-6xl mx-auto bg-white rounded-lg shadow-lg p-6">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="bg-blue-50 p-4 rounded-lg border border-blue-100">
+                    <h3 class="text-lg font-medium text-blue-800 mb-2">Total Calculations</h3>
+                    <p id="totalCalculations" class="text-3xl font-bold text-blue-600">-</p>
+                </div>
+                
+                <div class="bg-green-50 p-4 rounded-lg border border-green-100">
+                    <h3 class="text-lg font-medium text-green-800 mb-2">Average Rate</h3>
+                    <p id="averageRate" class="text-3xl font-bold text-green-600">-</p>
+                </div>
+                
+                <div class="bg-purple-50 p-4 rounded-lg border border-purple-100">
+                    <h3 class="text-lg font-medium text-purple-800 mb-2">Unique Users</h3>
+                    <p id="uniqueUsers" class="text-3xl font-bold text-purple-600">-</p>
+                </div>
+            </div>
+            
+            <div class="mb-8">
+                <h3 class="text-lg font-medium text-gray-900 mb-4">Recent Calculations</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Date
+                                </th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    User
+                                </th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Route
+                                </th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Container
+                                </th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Rate (USD)
+                                </th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Range (USD)
+                                </th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Reliability
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody" class="bg-white divide-y divide-gray-200">
+                            <!-- History rows will be loaded dynamically -->
+                            <tr>
+                                <td colspan="7" class="px-6 py-4 text-center text-gray-500">
+                                    Loading calculation history...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                    <h3 class="text-lg font-medium text-gray-900 mb-4">Popular Routes</h3>
+                    <div id="popularRoutes" class="bg-gray-50 p-4 rounded-md border border-gray-200 h-64 overflow-y-auto">
+                        <!-- Popular routes will be loaded dynamically -->
+                        <p class="text-center text-gray-500 mt-8">Loading route statistics...</p>
+                    </div>
+                </div>
+                
+                <div>
+                    <h3 class="text-lg font-medium text-gray-900 mb-4">Container Type Distribution</h3>
+                    <div id="containerDistribution" class="bg-gray-50 p-4 rounded-md border border-gray-200 h-64 overflow-y-auto">
+                        <!-- Container distribution will be loaded dynamically -->
+                        <p class="text-center text-gray-500 mt-8">Loading container statistics...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <footer class="mt-12 text-center text-sm text-gray-500">
+            <p>© <span id="currentYear"></span> TSP Transport OÜ. All rights reserved.</p>
+            <p class="mt-1">
+                Admin Dashboard - For authorized personnel only
+            </p>
+        </footer>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Set current year in footer
+            document.getElementById('currentYear').textContent = new Date().getFullYear();
+            
+            // Load calculation history
+            await loadHistory();
+            
+            // Calculate and display statistics
+            calculateStatistics();
+        });
+        
+        // Load calculation history from API
+        async function loadHistory() {
+            try {
+                const response = await fetch('/api/history');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch history');
+                }
+                
+                const history = await response.json();
+                
+                // Update history table
+                const tableBody = document.getElementById('historyTableBody');
+                
+                if (history.length === 0) {
+                    tableBody.innerHTML = `
+                        <tr>
+                            <td colspan="7" class="px-6 py-4 text-center text-gray-500">
+                                No calculation history found.
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+                
+                tableBody.innerHTML = '';
+                
+                history.forEach(item => {
+                    const date = new Date(item.timestamp).toLocaleString();
+                    const email = item.email;
+                    const route = `${item.origin} → ${item.destination}`;
+                    const container = item.container_type;
+                    const rate = `$${item.rate}`;
+                    const range = `$${item.min_rate} - $${item.max_rate}`;
+                    const reliability = `${Math.round(item.reliability * 100)}%`;
+                    
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${date}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${email}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${route}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${container}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${rate}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${range}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${reliability}</td>
+                    `;
+                    
+                    tableBody.appendChild(row);
+                });
+                
+                // Store history for statistics calculation
+                window.calculationHistory = history;
+            } catch (error) {
+                console.error('Error loading history:', error);
+                const tableBody = document.getElementById('historyTableBody');
+                tableBody.innerHTML = `
+                    <tr>
+                        <td colspan="7" class="px-6 py-4 text-center text-red-500">
+                            Failed to load calculation history. Please refresh the page and try again.
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+        
+        // Calculate and display statistics
+        function calculateStatistics() {
+            const history = window.calculationHistory || [];
+            
+            if (history.length === 0) {
+                document.getElementById('totalCalculations').textContent = '0';
+                document.getElementById('averageRate').textContent = '$0';
+                document.getElementById('uniqueUsers').textContent = '0';
+                
+                document.getElementById('popularRoutes').innerHTML = `
+                    <p class="text-center text-gray-500 mt-8">No data available</p>
+                `;
+                
+                document.getElementById('containerDistribution').innerHTML = `
+                    <p class="text-center text-gray-500 mt-8">No data available</p>
+                `;
+                
+                return;
+            }
+            
+            // Total calculations
+            document.getElementById('totalCalculations').textContent = history.length;
+            
+            // Average rate
+            const totalRate = history.reduce((sum, item) => sum + parseFloat(item.rate), 0);
+            const averageRate = totalRate / history.length;
+            document.getElementById('averageRate').textContent = `$${Math.round(averageRate)}`;
+            
+            // Unique users
+            const uniqueEmails = new Set(history.map(item => item.email));
+            document.getElementById('uniqueUsers').textContent = uniqueEmails.size;
+            
+            // Popular routes
+            const routes = {};
+            history.forEach(item => {
+                const route = `${item.origin} → ${item.destination}`;
+                routes[route] = (routes[route] || 0) + 1;
+            });
+            
+            const sortedRoutes = Object.entries(routes)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5);
+            
+            const routesHtml = sortedRoutes.map(([route, count]) => `
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-medium text-gray-900">${route}</span>
+                    <span class="text-sm text-gray-500">${count} queries</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2 mb-4">
+                    <div class="bg-blue-600 h-2 rounded-full" style="width: ${(count / history.length) * 100}%"></div>
+                </div>
+            `).join('');
+            
+            document.getElementById('popularRoutes').innerHTML = routesHtml || `
+                <p class="text-center text-gray-500 mt-8">No route data available</p>
+            `;
+            
+            // Container distribution
+            const containers = {};
+            history.forEach(item => {
+                containers[item.container_type] = (containers[item.container_type] || 0) + 1;
+            });
+            
+            const containerHtml = Object.entries(containers).map(([container, count]) => `
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-medium text-gray-900">${container}</span>
+                    <span class="text-sm text-gray-500">${count} queries (${Math.round((count / history.length) * 100)}%)</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2 mb-4">
+                    <div class="bg-green-600 h-2 rounded-full" style="width: ${(count / history.length) * 100}%"></div>
+                </div>
+            `).join('');
+            
+            document.getElementById('containerDistribution').innerHTML = containerHtml || `
+                <p class="text-center text-gray-500 mt-8">No container data available</p>
+            `;
+        }
+    </script>
+</body>
+</html>
