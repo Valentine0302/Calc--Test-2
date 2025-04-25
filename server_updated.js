@@ -31,7 +31,6 @@ async function addPorts() {
 // Вызов функции добавления портов
 addPorts();
 import express from 'express';
-import path from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
 import cors from 'cors';
