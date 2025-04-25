@@ -27,10 +27,10 @@ async function startApplication() {
     
     // Шаг 2: Запуск сервера
     console.log('Шаг 2: Запуск сервера...');
-    console.log('Запуск server.js...');
+    console.log('Запуск server_updated.js...');
     
     // Импортируем и запускаем сервер
-    import('./server.js')
+    import('./server_updated.js')
       .then(() => {
         console.log('Сервер успешно запущен');
       })
