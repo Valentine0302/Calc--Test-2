@@ -1,6 +1,5 @@
-// Обновленный файл server.js с исправленными параметрами SSL для подключения к базе данных
-// Включает расширенную базу данных портов, поиск ближайших портов,
-// запросы на добавление портов и верификацию email
+// Обновленный файл server.js с исправлениями для расчета ставок и доступа к админ-панели
+// Включает расширенную базу данных портов и исправленные параметры SSL для подключения к базе данных
 
 import express from 'express';
 import path from 'path';
@@ -189,6 +188,53 @@ app.post('/api/calculate', async (req, res) => {
     console.error('Error calculating freight rate:', error);
     res.status(500).json({ error: 'Failed to calculate freight rate' });
   }
+});
+
+// API endpoint to get calculation history
+app.get('/api/history', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM calculation_history ORDER BY timestamp DESC LIMIT 100');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching calculation history:', error);
+    res.status(500).json({ error: 'Failed to fetch calculation history' });
+  }
+});
+
+// Admin authentication middleware
+const authenticateAdmin = (req, res, next) => {
+  const { username, password } = req.query;
+  
+  // Check admin credentials from environment variables
+  const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
+  
+  if (username === adminUsername && password === adminPassword) {
+    next();
+  } else {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
+};
+
+// Admin API endpoints
+app.get('/api/admin/history', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM calculation_history ORDER BY timestamp DESC');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching admin history:', error);
+    res.status(500).json({ error: 'Failed to fetch admin history' });
+  }
+});
+
+// Serve admin page
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Serve main page for all other routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Initialize database and start server
