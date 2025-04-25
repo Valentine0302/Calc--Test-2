@@ -1,5 +1,5 @@
-// Обновленный server.js с интеграцией модулей для улучшенного расчета ставок фрахта
-// Включает кэширование данных для оптимизации производительности
+// Обновленный server.js с исправлением проблемы отсутствия колонки sources
+// и улучшенной обработкой ошибок
 
 import express from 'express';
 import path from 'path';
@@ -48,6 +48,7 @@ const rateCache = {
 // Initialize database tables if they don't exist
 async function initializeTables() {
   try {
+    // Создание основных таблиц
     await pool.query(`
       CREATE TABLE IF NOT EXISTS calculation_history (
         id SERIAL PRIMARY KEY,
@@ -60,8 +61,7 @@ async function initializeTables() {
         min_rate NUMERIC NOT NULL,
         max_rate NUMERIC NOT NULL,
         reliability NUMERIC NOT NULL,
-        source_count INTEGER NOT NULL,
-        sources TEXT
+        source_count INTEGER NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS ports (
@@ -105,6 +105,26 @@ async function initializeTables() {
         message TEXT
       );
     `);
+    
+    // Проверка и добавление колонки sources, если она отсутствует
+    try {
+      await pool.query(`
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_name='calculation_history' AND column_name='sources'
+            ) THEN
+                ALTER TABLE calculation_history ADD COLUMN sources TEXT;
+            END IF;
+        END $$;
+      `);
+      console.log('Schema updated: checked and added sources column if needed');
+    } catch (schemaError) {
+      console.error('Error updating schema:', schemaError);
+      // Продолжаем работу даже при ошибке обновления схемы
+    }
     
     // Check if container types exist
     const containerTypesResult = await pool.query('SELECT COUNT(*) FROM container_types');
@@ -243,24 +263,59 @@ app.post('/api/calculate', async (req, res) => {
     // Расчет ставки с использованием улучшенного алгоритма
     const result = await freightCalculator.calculateFreightRate(origin, destination, containerType);
     
-    // Save calculation to history
-    await pool.query(
-      `INSERT INTO calculation_history 
-       (timestamp, email, origin, destination, container_type, rate, min_rate, max_rate, reliability, source_count, sources)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [
-        email, 
-        origin, 
-        destination, 
-        containerType, 
-        result.rate, 
-        result.minRate, 
-        result.maxRate, 
-        result.reliability, 
-        result.sourceCount,
-        result.sources ? result.sources.join(', ') : 'Base calculation'
-      ]
-    );
+    // Проверка наличия колонки sources в таблице calculation_history
+    let hasSourcesColumn = true;
+    try {
+      const columnCheck = await pool.query(`
+        SELECT 1 
+        FROM information_schema.columns 
+        WHERE table_name='calculation_history' AND column_name='sources'
+      `);
+      hasSourcesColumn = columnCheck.rows.length > 0;
+    } catch (error) {
+      console.error('Error checking for sources column:', error);
+      hasSourcesColumn = false;
+    }
+    
+    // Сохранение расчета в историю с учетом наличия колонки sources
+    if (hasSourcesColumn) {
+      // Если колонка sources существует
+      await pool.query(
+        `INSERT INTO calculation_history 
+         (timestamp, email, origin, destination, container_type, rate, min_rate, max_rate, reliability, source_count, sources)
+         VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          email, 
+          origin, 
+          destination, 
+          containerType, 
+          result.rate, 
+          result.minRate, 
+          result.maxRate, 
+          result.reliability, 
+          result.sourceCount,
+          result.sources ? result.sources.join(', ') : 'Base calculation'
+        ]
+      );
+    } else {
+      // Если колонки sources нет
+      await pool.query(
+        `INSERT INTO calculation_history 
+         (timestamp, email, origin, destination, container_type, rate, min_rate, max_rate, reliability, source_count)
+         VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          email, 
+          origin, 
+          destination, 
+          containerType, 
+          result.rate, 
+          result.minRate, 
+          result.maxRate, 
+          result.reliability, 
+          result.sourceCount
+        ]
+      );
+    }
     
     console.log('Calculation result:', result);
     
