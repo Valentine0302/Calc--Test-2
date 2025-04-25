@@ -114,7 +114,7 @@ async function importHistoricalRates() {
 }
 
 // Модифицированная функция для импорта исторических данных из calculation_history
-// Учитывает возможные различия в схеме базы данных
+// Учитывает возможные различия в схеме базы данных и не использует алиасы в запросах
 async function importHistoricalDataFromCalculationHistory() {
   try {
     console.log('Importing historical data from calculation_history');
@@ -132,31 +132,31 @@ async function importHistoricalDataFromCalculationHistory() {
     // Определение, какие столбцы использовать в запросе
     const usePortId = columns.includes('origin_port_id') && columns.includes('destination_port_id');
     
-    // Формирование запроса в зависимости от доступных столбцов
+    // Формирование запроса в зависимости от доступных столбцов, без использования алиасов
     let historyQuery;
     if (usePortId) {
       historyQuery = `
         SELECT 
-          ch.origin_port_id as origin_port, 
-          ch.destination_port_id as destination_port, 
-          ch.container_type, 
-          ch.rate, 
-          ch.created_at,
-          ch.sources
-        FROM calculation_history ch
-        ORDER BY ch.created_at
+          origin_port_id as origin_port, 
+          destination_port_id as destination_port, 
+          container_type, 
+          rate, 
+          created_at,
+          sources
+        FROM calculation_history
+        ORDER BY created_at
       `;
     } else {
       historyQuery = `
         SELECT 
-          ch.origin_port as origin_port, 
-          ch.destination_port as destination_port, 
-          ch.container_type, 
-          ch.rate, 
-          ch.created_at,
-          ch.sources
-        FROM calculation_history ch
-        ORDER BY ch.created_at
+          origin_port, 
+          destination_port, 
+          container_type, 
+          rate, 
+          created_at,
+          sources
+        FROM calculation_history
+        ORDER BY created_at
       `;
     }
     
