@@ -132,6 +132,7 @@ async function handleFormSubmit(event) {
         }
         
         const result = await response.json();
+        console.log('Received calculation result:', result);
         
         // Display results
         displayResults(data, result);
@@ -162,19 +163,25 @@ function displayResults(data, result) {
     document.getElementById('containerDisplay').textContent = containerTypeOption.textContent.split(' - ')[0];
     document.getElementById('dateDisplay').textContent = new Date().toLocaleDateString();
     
-    document.getElementById('minRate').textContent = `$${result.min_rate}`;
-    document.getElementById('maxRate').textContent = `$${result.max_rate}`;
-    document.getElementById('avgRate').textContent = `$${result.rate}`;
+    // Use camelCase property names (minRate, maxRate) instead of snake_case (min_rate, max_rate)
+    document.getElementById('minRate').textContent = `$${result.minRate || result.min_rate || 0}`;
+    document.getElementById('maxRate').textContent = `$${result.maxRate || result.max_rate || 0}`;
+    document.getElementById('avgRate').textContent = `$${result.rate || 0}`;
     
     // Calculate position of average rate indicator
-    const range = result.max_rate - result.min_rate;
-    const position = range > 0 ? ((result.rate - result.min_rate) / range) * 100 : 50;
+    const min = result.minRate || result.min_rate || 0;
+    const max = result.maxRate || result.max_rate || 0;
+    const avg = result.rate || 0;
+    
+    const range = max - min;
+    const position = range > 0 ? ((avg - min) / range) * 100 : 50;
     document.getElementById('rateIndicator').style.width = `${position}%`;
     
-    document.getElementById('sourceCount').textContent = result.source_count;
+    document.getElementById('sourceCount').textContent = result.sourceCount || result.source_count || 0;
     
     // Display reliability as percentage
-    const reliabilityPercent = Math.round(result.reliability * 100);
+    const reliability = result.reliability || 0;
+    const reliabilityPercent = Math.round(reliability * 100);
     document.getElementById('reliability').textContent = `${reliabilityPercent}%`;
     
     // Show result container
