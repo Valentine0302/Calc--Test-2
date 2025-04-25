@@ -518,6 +518,164 @@ function validateEmail(email) {
 }
 
 // Запуск сервера
+// Маршруты для административной панели
+// Добавляем в server.js
+
+// Маршрут для административной панели
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Маршрут для получения всех данных о портах для администратора
+app.get('/api/admin/ports', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM ports ORDER BY name');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching ports for admin:', error);
+    res.status(500).json({ error: 'Failed to fetch ports' });
+  }
+});
+
+// Маршрут для получения всех расчетов для администратора
+app.get('/api/admin/calculations', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        ch.id,
+        p1.name as origin_port_name,
+        p2.name as destination_port_name,
+        ch.container_type,
+        ch.weight,
+        ch.rate,
+        ch.email,
+        ch.created_at
+      FROM calculation_history ch
+      JOIN ports p1 ON ch.origin_port_id = p1.id
+      JOIN ports p2 ON ch.destination_port_id = p2.id
+      ORDER BY ch.created_at DESC
+      LIMIT 100
+    `;
+    
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching calculations for admin:', error);
+    res.status(500).json({ error: 'Failed to fetch calculations' });
+  }
+});
+
+// Маршрут для получения всех индексов для администратора
+app.get('/api/admin/indices', async (req, res) => {
+  try {
+    // Получение всех индексов из базы данных
+    const query = `
+      SELECT * FROM indices
+      ORDER BY index_date DESC
+    `;
+    
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching indices for admin:', error);
+    res.status(500).json({ error: 'Failed to fetch indices' });
+  }
+});
+
+// Маршрут для обновления данных порта
+app.put('/api/admin/ports/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, code, region, latitude, longitude } = req.body;
+    
+    // Проверка наличия всех необходимых параметров
+    if (!name || !code || !region) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+    
+    // Обновление данных порта
+    const query = `
+      UPDATE ports
+      SET name = $1, code = $2, region = $3, latitude = $4, longitude = $5
+      WHERE id = $6
+      RETURNING *
+    `;
+    
+    const result = await pool.query(query, [name, code, region, latitude, longitude, id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Port not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating port:', error);
+    res.status(500).json({ error: 'Failed to update port' });
+  }
+});
+
+// Маршрут для добавления нового порта
+app.post('/api/admin/ports', async (req, res) => {
+  try {
+    const { name, code, region, latitude, longitude } = req.body;
+    
+    // Проверка наличия всех необходимых параметров
+    if (!name || !code || !region) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+    
+    // Добавление нового порта
+    const query = `
+      INSERT INTO ports (name, code, region, latitude, longitude)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+    `;
+    
+    const result = await pool.query(query, [name, code, region, latitude, longitude]);
+    
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error adding port:', error);
+    res.status(500).json({ error: 'Failed to add port' });
+  }
+});
+
+// Маршрут для удаления порта
+app.delete('/api/admin/ports/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Проверка использования порта в расчетах
+    const checkQuery = `
+      SELECT COUNT(*) FROM calculation_history
+      WHERE origin_port_id = $1 OR destination_port_id = $1
+    `;
+    
+    const checkResult = await pool.query(checkQuery, [id]);
+    
+    if (checkResult.rows[0].count > 0) {
+      return res.status(400).json({ error: 'Cannot delete port that is used in calculations' });
+    }
+    
+    // Удаление порта
+    const query = `
+      DELETE FROM ports
+      WHERE id = $1
+      RETURNING *
+    `;
+    
+    const result = await pool.query(query, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Port not found' });
+    }
+    
+    res.json({ message: 'Port deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting port:', error);
+    res.status(500).json({ error: 'Failed to delete port' });
+  }
+});
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
