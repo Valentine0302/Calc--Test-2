@@ -1,4 +1,6 @@
-psql $DATABASE_URL -c "INSERT INTO ports (id, name, country, region) VALUES
+-- SQL-скрипт для добавления портов в базу данных калькулятора ставок фрахта
+
+INSERT INTO ports (id, name, country, region) VALUES
 -- Порты Балтийского региона
 ('EETLL', 'Tallinn', 'Estonia', 'Europe'),
 ('EERGA', 'Riga', 'Latvia', 'Europe'),
@@ -107,4 +109,4 @@ psql $DATABASE_URL -c "INSERT INTO ports (id, name, country, region) VALUES
 ('NZTIU', 'Timaru', 'New Zealand', 'Oceania'),
 ('FJSUV', 'Suva', 'Fiji', 'Oceania'),
 ('PGPOM', 'Port Moresby', 'Papua New Guinea', 'Oceania')
-ON CONFLICT (id) DO NOTHING;"
+ON CONFLICT (id) DO NOTHING;
