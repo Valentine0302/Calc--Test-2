@@ -1,10 +1,10 @@
 // Модуль для сбора данных из Freightos Baltic Index (FBX)
 // Использует публично доступные данные индекса FBX
 
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
+const axios = require('axios');
+const cheerio = require('cheerio');
+const { Pool } = require('pg');
+const dotenv = require('dotenv');
 
 // Загрузка переменных окружения
 dotenv.config();
@@ -243,8 +243,8 @@ async function getPortRegionById(portId) {
   }
 }
 
-// Экспорт функций
-export default {
+// Экспорт функций в формате CommonJS
+module.exports = {
   fetchFBXData,
   getFBXDataForRoute
 };
