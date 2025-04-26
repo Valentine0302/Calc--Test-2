@@ -1,36 +1,29 @@
-// Интеграционный модуль для объединения всех компонентов улучшенного калькулятора фрахтовых ставок
-// Объединяет скраперы данных, анализ сезонности и расчет топливной надбавки
+// Модифицированный server.js с автоматическим сбросом проблемных таблиц при запуске
 
-import express from 'express';
-import cors from 'cors';
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Импорт модулей скраперов для различных индексов
-import scfiScraper from './scfi_scraper.js';
-import fbxScraper from './fbx_scraper.js';
-import wciScraper from './wci_scraper.js';
-import bdiScraper from './bdi_scraper.js';
-import ccfiScraper from './ccfi_scraper.js';
-import harpexScraper from './harpex_scraper.js';
-import xenetaScraper from './xeneta_scraper.js';
-import contexScraper from './contex_scraper.js';
-import istfixScraper from './istfix_scraper.js';
-import ctsScraper from './cts_scraper.js';
-
-// Импорт модулей анализа и расчета
-import seasonalityAnalyzer from './seasonality_analyzer.js';
-import fuelSurchargeCalculator from './fuel_surcharge_calculator.js';
-import enhancedFreightCalculator from './freight_calculator.js';
+const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
+const dotenv = require('dotenv');
+const nodemailer = require('nodemailer');
+const path = require('path');
+const enhancedFreightCalculator = require('./freight_calculator.js');
+const seasonalityAnalyzer = require('./seasonality_analyzer.js');
+const fuelSurchargeCalculator = require('./fuel_surcharge_calculator.js');
 
 // Загрузка переменных окружения
 dotenv.config();
 
-// Определение __dirname для ES модулей
-const __filename = fileURLToPath(import.meta.url);
+// Настройка Express
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// Настройка CORS
+app.use(cors());
+app.use(express.json());
+
+// Настройка статических файлов
 const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Подключение к базе данных
 const pool = new Pool({
@@ -41,30 +34,32 @@ const pool = new Pool({
   }
 });
 
-// Создание экземпляра Express
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Функция для инициализации всех компонентов системы
-async function initializeSystem() {
+// Функция для автоматического сброса проблемных таблиц при запуске
+async function resetProblematicTables() {
   try {
-    console.log('Initializing enhanced freight calculator system...');
-    
-    // Инициализация модуля анализа сезонности
-    await seasonalityAnalyzer.initializeAndUpdateSeasonalityData(false); // false - не генерировать синтетические данные при первом запуске
-    
-    // Инициализация модуля расчета топливной надбавки
-    await fuelSurchargeCalculator.initializeAndUpdateFuelSurchargeData();
-    
-    console.log('System initialization completed');
+    console.log('Resetting problematic tables...');
+    await pool.query('DROP TABLE IF EXISTS historical_rates CASCADE');
+    await pool.query('DROP TABLE IF EXISTS fuel_prices CASCADE');
+    console.log('Tables reset successfully');
   } catch (error) {
-    console.error('Error initializing system:', error);
+    console.error('Error resetting tables:', error);
   }
+}
+
+// Функция для инициализации системы
+async function initializeSystem() {
+  console.log('Initializing enhanced freight calculator system...');
+  
+  // Сначала сбрасываем проблемные таблицы
+  await resetProblematicTables();
+  
+  // Инициализация данных для анализа сезонности
+  await seasonalityAnalyzer.initializeAndUpdateSeasonalityData();
+  
+  // Инициализация данных для расчета топливных надбавок
+  await fuelSurchargeCalculator.initializeAndUpdateFuelSurchargeData();
+  
+  console.log('System initialization completed');
 }
 
 // Маршрут для получения списка портов
@@ -78,32 +73,41 @@ app.get('/api/ports', async (req, res) => {
   }
 });
 
-// Маршрут для расчета фрахтовой ставки
+// Маршрут для получения списка типов контейнеров
+app.get('/api/container-types', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM container_types ORDER BY name');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching container types:', error);
+    res.status(500).json({ error: 'Failed to fetch container types' });
+  }
+});
+
+// Маршрут для расчета ставки фрахта
 app.post('/api/calculate', async (req, res) => {
   try {
     const { originPort, destinationPort, containerType, weight, email } = req.body;
     
     // Проверка наличия всех необходимых параметров
-    if (!originPort || !destinationPort || !containerType || !weight) {
+    if (!originPort || !destinationPort || !containerType) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
     
-    // Проверка валидности email, если он предоставлен
-    if (email && !validateEmail(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
-    }
-    
-    // Расчет фрахтовой ставки
+    // Расчет ставки фрахта
     const result = await enhancedFreightCalculator.calculateFreightRate(
       originPort,
       destinationPort,
       containerType,
-      weight
+      weight || 20000 // Используем значение по умолчанию, если не указано
     );
     
-    // Сохранение запроса в историю, если предоставлен email
+    // Сохранение результата расчета в базу данных
+    await saveCalculationHistory(originPort, destinationPort, containerType, result.rate, result.sources);
+    
+    // Отправка результата на email, если он указан
     if (email) {
-      await saveRequestToHistory(originPort, destinationPort, containerType, weight, result.finalRate, email);
+      await sendResultByEmail(email, originPort, destinationPort, containerType, result);
     }
     
     res.json(result);
@@ -113,584 +117,242 @@ app.post('/api/calculate', async (req, res) => {
   }
 });
 
-// Маршрут для получения истории расчетов
-app.get('/api/history', async (req, res) => {
+// Функция для сохранения истории расчетов
+async function saveCalculationHistory(originPort, destinationPort, containerType, rate, sources) {
   try {
-    const result = await enhancedFreightCalculator.getCalculationHistory();
-    res.json(result);
-  } catch (error) {
-    console.error('Error fetching calculation history:', error);
-    res.status(500).json({ error: 'Failed to fetch calculation history' });
-  }
-});
-
-// Маршрут для получения коэффициентов сезонности
-app.get('/api/seasonality', async (req, res) => {
-  try {
-    const { originRegion, destinationRegion } = req.query;
+    // Проверяем структуру таблицы calculation_history
+    const columnsQuery = `
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'calculation_history'
+    `;
     
-    // Если указаны регионы, возвращаем коэффициенты для конкретной пары
-    if (originRegion && destinationRegion) {
-      const factors = [];
-      
-      // Получение коэффициентов для всех месяцев
-      for (let month = 1; month <= 12; month++) {
-        const factor = await seasonalityAnalyzer.getSeasonalityFactor(originRegion, destinationRegion, month);
-        factors.push({
-          month,
-          factor: factor.factor,
-          confidence: factor.confidence
-        });
-      }
-      
-      res.json(factors);
+    const columnsResult = await pool.query(columnsQuery);
+    const columns = columnsResult.rows.map(row => row.column_name);
+    
+    // Формируем запрос в зависимости от доступных колонок
+    let query;
+    let params;
+    
+    if (columns.includes('origin_port_id') && columns.includes('destination_port_id')) {
+      query = `
+        INSERT INTO calculation_history 
+        (origin_port_id, destination_port_id, container_type, rate, sources, created_at) 
+        VALUES ($1, $2, $3, $4, $5, NOW())
+      `;
+      params = [originPort, destinationPort, containerType, rate, sources];
+    } else if (columns.includes('origin_port') && columns.includes('destination_port')) {
+      query = `
+        INSERT INTO calculation_history 
+        (origin_port, destination_port, container_type, rate, sources, created_at) 
+        VALUES ($1, $2, $3, $4, $5, NOW())
+      `;
+      params = [originPort, destinationPort, containerType, rate, sources];
     } else {
-      // Иначе возвращаем все коэффициенты
-      const factors = await seasonalityAnalyzer.getAllSeasonalityFactors();
-      res.json(factors);
-    }
-  } catch (error) {
-    console.error('Error fetching seasonality factors:', error);
-    res.status(500).json({ error: 'Failed to fetch seasonality factors' });
-  }
-});
-
-// Маршрут для получения исторических данных для визуализации
-app.get('/api/historical-rates', async (req, res) => {
-  try {
-    const { originRegion, destinationRegion, containerType, months } = req.query;
-    
-    // Проверка наличия всех необходимых параметров
-    if (!originRegion || !destinationRegion) {
-      return res.status(400).json({ error: 'Missing required parameters' });
-    }
-    
-    const historicalRates = await seasonalityAnalyzer.getHistoricalRatesForVisualization(
-      originRegion,
-      destinationRegion,
-      containerType || '40DC',
-      parseInt(months) || 24
-    );
-    
-    res.json(historicalRates);
-  } catch (error) {
-    console.error('Error fetching historical rates:', error);
-    res.status(500).json({ error: 'Failed to fetch historical rates' });
-  }
-});
-
-// Маршрут для получения истории цен на топливо
-app.get('/api/fuel-prices', async (req, res) => {
-  try {
-    const { fuelType, months } = req.query;
-    
-    const fuelPrices = await fuelSurchargeCalculator.getFuelPriceHistory(
-      fuelType || 'VLSFO',
-      parseInt(months) || 12
-    );
-    
-    res.json(fuelPrices);
-  } catch (error) {
-    console.error('Error fetching fuel prices:', error);
-    res.status(500).json({ error: 'Failed to fetch fuel prices' });
-  }
-});
-
-// Маршрут для получения текущих значений индексов
-app.get('/api/indices', async (req, res) => {
-  try {
-    // Сбор данных из всех доступных источников
-    const indices = {};
-    
-    // SCFI
-    try {
-      const scfiData = await scfiScraper.getSCFIDataForCalculation();
-      if (scfiData) {
-        indices.SCFI = {
-          currentIndex: scfiData.current_index,
-          change: scfiData.change,
-          indexDate: scfiData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching SCFI data:', error);
-    }
-    
-    // FBX
-    try {
-      const fbxData = await fbxScraper.getFBXDataForCalculation();
-      if (fbxData) {
-        indices.FBX = {
-          currentIndex: fbxData.current_index,
-          change: fbxData.change,
-          indexDate: fbxData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching FBX data:', error);
-    }
-    
-    // WCI
-    try {
-      const wciData = await wciScraper.getWCIDataForCalculation();
-      if (wciData) {
-        indices.WCI = {
-          currentIndex: wciData.current_index,
-          change: wciData.change,
-          indexDate: wciData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching WCI data:', error);
-    }
-    
-    // BDI
-    try {
-      const bdiData = await bdiScraper.getBDIDataForCalculation();
-      if (bdiData) {
-        indices.BDI = {
-          currentIndex: bdiData.current_index,
-          change: bdiData.change,
-          indexDate: bdiData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching BDI data:', error);
-    }
-    
-    // CCFI
-    try {
-      const ccfiData = await ccfiScraper.getCCFIDataForCalculation();
-      if (ccfiData) {
-        indices.CCFI = {
-          currentIndex: ccfiData.current_index,
-          change: ccfiData.change,
-          indexDate: ccfiData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching CCFI data:', error);
-    }
-    
-    // Harpex
-    try {
-      const harpexData = await harpexScraper.getHarpexDataForCalculation();
-      if (harpexData) {
-        indices.Harpex = {
-          currentIndex: harpexData.current_index,
-          change: harpexData.change,
-          indexDate: harpexData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching Harpex data:', error);
-    }
-    
-    // New ConTex
-    try {
-      const contexData = await contexScraper.getContexDataForCalculation();
-      if (contexData) {
-        indices.NewConTex = {
-          currentIndex: contexData.current_index,
-          change: contexData.change,
-          indexDate: contexData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching New ConTex data:', error);
-    }
-    
-    // ISTFIX
-    try {
-      const istfixData = await istfixScraper.getISTFIXDataForCalculation();
-      if (istfixData) {
-        indices.ISTFIX = {
-          currentIndex: istfixData.current_index,
-          change: istfixData.change,
-          indexDate: istfixData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching ISTFIX data:', error);
-    }
-    
-    // CTS
-    try {
-      const ctsData = await ctsScraper.getCTSDataForCalculation();
-      if (ctsData) {
-        indices.CTS = {
-          currentIndex: ctsData.current_index,
-          change: ctsData.change,
-          indexDate: ctsData.index_date
-        };
-      }
-    } catch (error) {
-      console.error('Error fetching CTS data:', error);
-    }
-    
-    res.json(indices);
-  } catch (error) {
-    console.error('Error fetching indices:', error);
-    res.status(500).json({ error: 'Failed to fetch indices' });
-  }
-});
-
-// Маршрут для обновления данных индексов
-app.post('/api/update-indices', async (req, res) => {
-  try {
-    const results = {};
-    
-    // Обновление данных SCFI
-    try {
-      const scfiData = await scfiScraper.fetchSCFIData();
-      results.SCFI = { success: true, count: scfiData.length };
-    } catch (error) {
-      results.SCFI = { success: false, error: error.message };
-    }
-    
-    // Обновление данных FBX
-    try {
-      const fbxData = await fbxScraper.fetchFBXData();
-      results.FBX = { success: true, count: fbxData.length };
-    } catch (error) {
-      results.FBX = { success: false, error: error.message };
-    }
-    
-    // Обновление данных WCI
-    try {
-      const wciData = await wciScraper.fetchWCIData();
-      results.WCI = { success: true, count: wciData.length };
-    } catch (error) {
-      results.WCI = { success: false, error: error.message };
-    }
-    
-    // Обновление данных BDI
-    try {
-      const bdiData = await bdiScraper.fetchBDIData();
-      results.BDI = { success: true, count: bdiData.length };
-    } catch (error) {
-      results.BDI = { success: false, error: error.message };
-    }
-    
-    // Обновление данных CCFI
-    try {
-      const ccfiData = await ccfiScraper.fetchCCFIData();
-      results.CCFI = { success: true, count: ccfiData.length };
-    } catch (error) {
-      results.CCFI = { success: false, error: error.message };
-    }
-    
-    // Обновление данных Harpex
-    try {
-      const harpexData = await harpexScraper.fetchHarpexData();
-      results.Harpex = { success: true, count: harpexData.length };
-    } catch (error) {
-      results.Harpex = { success: false, error: error.message };
-    }
-    
-    // Обновление данных New ConTex
-    try {
-      const contexData = await contexScraper.fetchContexData();
-      results.NewConTex = { success: true, count: contexData.length };
-    } catch (error) {
-      results.NewConTex = { success: false, error: error.message };
-    }
-    
-    // Обновление данных ISTFIX
-    try {
-      const istfixData = await istfixScraper.fetchISTFIXData();
-      results.ISTFIX = { success: true, count: istfixData.length };
-    } catch (error) {
-      results.ISTFIX = { success: false, error: error.message };
-    }
-    
-    // Обновление данных CTS
-    try {
-      const ctsData = await ctsScraper.fetchCTSData();
-      results.CTS = { success: true, count: ctsData.length };
-    } catch (error) {
-      results.CTS = { success: false, error: error.message };
-    }
-    
-    // Обновление цен на топливо
-    try {
-      const fuelPrices = await fuelSurchargeCalculator.fetchCurrentFuelPrices();
-      results.FuelPrices = { success: true, count: Object.keys(fuelPrices).length };
-    } catch (error) {
-      results.FuelPrices = { success: false, error: error.message };
-    }
-    
-    // Обновление коэффициентов сезонности
-    try {
-      await seasonalityAnalyzer.analyzeSeasonalityFactors();
-      results.Seasonality = { success: true };
-    } catch (error) {
-      results.Seasonality = { success: false, error: error.message };
-    }
-    
-    res.json(results);
-  } catch (error) {
-    console.error('Error updating indices:', error);
-    res.status(500).json({ error: 'Failed to update indices' });
-  }
-});
-
-// Маршрут для получения расчета топливной надбавки
-app.post('/api/fuel-surcharge', async (req, res) => {
-  try {
-    const { originPort, destinationPort, containerType, fuelType } = req.body;
-    
-    // Проверка наличия всех необходимых параметров
-    if (!originPort || !destinationPort || !containerType) {
-      return res.status(400).json({ error: 'Missing required parameters' });
-    }
-    
-    // Расчет топливной надбавки
-    const result = await fuelSurchargeCalculator.calculateFuelSurcharge(
-      originPort,
-      destinationPort,
-      containerType,
-      fuelType || 'VLSFO'
-    );
-    
-    res.json(result);
-  } catch (error) {
-    console.error('Error calculating fuel surcharge:', error);
-    res.status(500).json({ error: 'Failed to calculate fuel surcharge' });
-  }
-});
-
-// Функция для сохранения запроса в историю
-async function saveRequestToHistory(originPort, destinationPort, containerType, weight, rate, email) {
-  try {
-    // Проверка существования таблицы request_history
-    const tableCheckResult = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_name = 'request_history'
-      )
-    `);
-    
-    // Если таблица не существует, создаем ее
-    if (!tableCheckResult.rows[0].exists) {
+      // Если таблица не существует или имеет неожиданную структуру, создаем её
       await pool.query(`
-        CREATE TABLE request_history (
+        CREATE TABLE IF NOT EXISTS calculation_history (
           id SERIAL PRIMARY KEY,
-          origin_port_id INTEGER NOT NULL,
-          destination_port_id INTEGER NOT NULL,
+          origin_port_id VARCHAR(10) NOT NULL,
+          destination_port_id VARCHAR(10) NOT NULL,
           container_type VARCHAR(10) NOT NULL,
-          weight INTEGER NOT NULL,
           rate NUMERIC NOT NULL,
-          email VARCHAR(255) NOT NULL,
-          request_date TIMESTAMP NOT NULL DEFAULT NOW(),
-          FOREIGN KEY (origin_port_id) REFERENCES ports(id),
-          FOREIGN KEY (destination_port_id) REFERENCES ports(id)
+          sources TEXT,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
       `);
+      
+      query = `
+        INSERT INTO calculation_history 
+        (origin_port_id, destination_port_id, container_type, rate, sources, created_at) 
+        VALUES ($1, $2, $3, $4, $5, NOW())
+      `;
+      params = [originPort, destinationPort, containerType, rate, sources];
     }
     
-    // Сохранение запроса в историю
-    await pool.query(
-      `INSERT INTO request_history 
-       (origin_port_id, destination_port_id, container_type, weight, rate, email) 
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        originPort,
-        destinationPort,
-        containerType,
-        weight,
-        rate,
-        email
-      ]
-    );
-    
-    console.log('Request saved to history');
+    await pool.query(query, params);
+    console.log('Calculation history saved');
   } catch (error) {
-    console.error('Error saving request to history:', error);
-    // Ошибка сохранения истории не должна прерывать основной процесс
+    console.error('Error saving calculation history:', error);
+    // Не пробрасываем ошибку дальше, чтобы не прерывать ответ API
   }
 }
 
-// Функция для валидации email
-function validateEmail(email) {
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(email);
+// Функция для отправки результата расчета по email
+async function sendResultByEmail(email, originPort, destinationPort, containerType, result) {
+  try {
+    // Получение информации о портах
+    const originPortInfo = await getPortInfo(originPort);
+    const destinationPortInfo = await getPortInfo(destinationPort);
+    
+    // Получение информации о типе контейнера
+    const containerTypeInfo = await getContainerTypeInfo(containerType);
+    
+    // Настройка транспорта для отправки email
+    const transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: process.env.EMAIL_PORT,
+      secure: process.env.EMAIL_SECURE === 'true',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+    
+    // Формирование текста письма
+    const mailOptions = {
+      from: process.env.EMAIL_FROM,
+      to: email,
+      subject: 'Freight Rate Calculation Result',
+      html: `
+        <h2>Freight Rate Calculation Result</h2>
+        <p><strong>Route:</strong> ${originPortInfo.name} (${originPort}) → ${destinationPortInfo.name} (${destinationPort})</p>
+        <p><strong>Container Type:</strong> ${containerTypeInfo.name} - ${containerTypeInfo.description}</p>
+        <p><strong>Calculated Rate:</strong> $${result.rate}</p>
+        <p><strong>Rate Range:</strong> $${result.minRate || result.min_rate} - $${result.maxRate || result.max_rate}</p>
+        <p><strong>Reliability:</strong> ${Math.round((result.reliability || 0.7) * 100)}%</p>
+        <p><strong>Based on:</strong> ${result.sourceCount || result.source_count} sources</p>
+        <p><strong>Calculation Date:</strong> ${new Date().toLocaleDateString()}</p>
+        <hr>
+        <p>This is an automated message from the Freight Rate Calculator.</p>
+      `
+    };
+    
+    // Отправка письма
+    await transporter.sendMail(mailOptions);
+    console.log(`Calculation result sent to ${email}`);
+  } catch (error) {
+    console.error('Error sending email:', error);
+    // Не пробрасываем ошибку дальше, чтобы не прерывать ответ API
+  }
 }
 
-// Запуск сервера
-// Маршруты для административной панели
-// Добавляем в server.js
+// Функция для получения информации о порте
+async function getPortInfo(portId) {
+  try {
+    const result = await pool.query('SELECT * FROM ports WHERE id = $1', [portId]);
+    return result.rows[0] || { name: 'Unknown Port', region: 'Unknown' };
+  } catch (error) {
+    console.error('Error getting port info:', error);
+    return { name: 'Unknown Port', region: 'Unknown' };
+  }
+}
+
+// Функция для получения информации о типе контейнера
+async function getContainerTypeInfo(containerTypeId) {
+  try {
+    const result = await pool.query('SELECT * FROM container_types WHERE id = $1', [containerTypeId]);
+    return result.rows[0] || { name: 'Unknown Container', description: '' };
+  } catch (error) {
+    console.error('Error getting container type info:', error);
+    return { name: 'Unknown Container', description: '' };
+  }
+}
 
 // Маршрут для административной панели
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
-// Маршрут для получения всех данных о портах для администратора
-app.get('/api/admin/ports', async (req, res) => {
+// Маршрут для получения данных о сезонности
+app.get('/api/seasonality', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM ports ORDER BY name');
-    res.json(result.rows);
+    const factors = await seasonalityAnalyzer.getAllSeasonalityFactors();
+    res.json(factors);
   } catch (error) {
-    console.error('Error fetching ports for admin:', error);
-    res.status(500).json({ error: 'Failed to fetch ports' });
+    console.error('Error fetching seasonality data:', error);
+    res.status(500).json({ error: 'Failed to fetch seasonality data' });
   }
 });
 
-// Маршрут для получения всех расчетов для администратора
-app.get('/api/admin/calculations', async (req, res) => {
+// Маршрут для получения данных о ценах на топливо
+app.get('/api/fuel-prices', async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        ch.id,
-        p1.name as origin_port_name,
-        p2.name as destination_port_name,
-        ch.container_type,
-        ch.weight,
-        ch.rate,
-        ch.email,
-        ch.created_at
-      FROM calculation_history ch
-      JOIN ports p1 ON ch.origin_port_id = p1.id
-      JOIN ports p2 ON ch.destination_port_id = p2.id
-      ORDER BY ch.created_at DESC
-      LIMIT 100
-    `;
-    
-    const result = await pool.query(query);
-    res.json(result.rows);
+    const months = req.query.months ? parseInt(req.query.months) : 12;
+    const prices = await fuelSurchargeCalculator.getFuelPriceHistory(months);
+    res.json(prices);
   } catch (error) {
-    console.error('Error fetching calculations for admin:', error);
-    res.status(500).json({ error: 'Failed to fetch calculations' });
+    console.error('Error fetching fuel prices:', error);
+    res.status(500).json({ error: 'Failed to fetch fuel prices' });
   }
 });
 
-// Маршрут для получения всех индексов для администратора
-app.get('/api/admin/indices', async (req, res) => {
+// Маршрут для получения коэффициентов топливных надбавок
+app.get('/api/fuel-surcharge-factors', async (req, res) => {
   try {
-    // Получение всех индексов из базы данных
-    const query = `
-      SELECT * FROM indices
-      ORDER BY index_date DESC
-    `;
-    
-    const result = await pool.query(query);
-    res.json(result.rows);
+    const factors = await fuelSurchargeCalculator.getAllFuelSurchargeFactors();
+    res.json(factors);
   } catch (error) {
-    console.error('Error fetching indices for admin:', error);
-    res.status(500).json({ error: 'Failed to fetch indices' });
+    console.error('Error fetching fuel surcharge factors:', error);
+    res.status(500).json({ error: 'Failed to fetch fuel surcharge factors' });
   }
 });
 
-// Маршрут для обновления данных порта
-app.put('/api/admin/ports/:id', async (req, res) => {
+// Маршрут для обновления коэффициентов топливных надбавок
+app.post('/api/fuel-surcharge-factors', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, code, region, latitude, longitude } = req.body;
+    const { factors } = req.body;
     
-    // Проверка наличия всех необходимых параметров
-    if (!name || !code || !region) {
+    if (!factors || !Array.isArray(factors)) {
+      return res.status(400).json({ error: 'Invalid factors data' });
+    }
+    
+    const result = await fuelSurchargeCalculator.updateFuelSurchargeFactors(factors);
+    
+    if (result) {
+      res.json({ success: true, message: 'Fuel surcharge factors updated successfully' });
+    } else {
+      res.status(500).json({ error: 'Failed to update fuel surcharge factors' });
+    }
+  } catch (error) {
+    console.error('Error updating fuel surcharge factors:', error);
+    res.status(500).json({ error: 'Failed to update fuel surcharge factors' });
+  }
+});
+
+// Маршрут для получения исторических данных о ставках
+app.get('/api/historical-rates', async (req, res) => {
+  try {
+    const { originRegion, destinationRegion, containerType, months } = req.query;
+    
+    if (!originRegion || !destinationRegion || !containerType) {
       return res.status(400).json({ error: 'Missing required parameters' });
     }
     
-    // Обновление данных порта
-    const query = `
-      UPDATE ports
-      SET name = $1, code = $2, region = $3, latitude = $4, longitude = $5
-      WHERE id = $6
-      RETURNING *
-    `;
+    const data = await seasonalityAnalyzer.getHistoricalRatesForVisualization(
+      originRegion,
+      destinationRegion,
+      containerType,
+      parseInt(months) || 12
+    );
     
-    const result = await pool.query(query, [name, code, region, latitude, longitude, id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Port not found' });
-    }
-    
-    res.json(result.rows[0]);
+    res.json(data);
   } catch (error) {
-    console.error('Error updating port:', error);
-    res.status(500).json({ error: 'Failed to update port' });
+    console.error('Error fetching historical rates:', error);
+    res.status(500).json({ error: 'Failed to fetch historical rates' });
   }
 });
 
-// Маршрут для добавления нового порта
-app.post('/api/admin/ports', async (req, res) => {
+// Маршрут для запуска анализа сезонности
+app.post('/api/analyze-seasonality', async (req, res) => {
   try {
-    const { name, code, region, latitude, longitude } = req.body;
+    const result = await seasonalityAnalyzer.analyzeSeasonalityFactors();
     
-    // Проверка наличия всех необходимых параметров
-    if (!name || !code || !region) {
-      return res.status(400).json({ error: 'Missing required parameters' });
+    if (result) {
+      res.json({ success: true, message: 'Seasonality analysis completed successfully' });
+    } else {
+      res.status(500).json({ error: 'Failed to analyze seasonality' });
     }
-    
-    // Добавление нового порта
-    const query = `
-      INSERT INTO ports (name, code, region, latitude, longitude)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `;
-    
-    const result = await pool.query(query, [name, code, region, latitude, longitude]);
-    
-    res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Error adding port:', error);
-    res.status(500).json({ error: 'Failed to add port' });
+    console.error('Error analyzing seasonality:', error);
+    res.status(500).json({ error: 'Failed to analyze seasonality' });
   }
 });
 
-// Маршрут для удаления порта
-app.delete('/api/admin/ports/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    // Проверка использования порта в расчетах
-    const checkQuery = `
-      SELECT COUNT(*) FROM calculation_history
-      WHERE origin_port_id = $1 OR destination_port_id = $1
-    `;
-    
-    const checkResult = await pool.query(checkQuery, [id]);
-    
-    if (checkResult.rows[0].count > 0) {
-      return res.status(400).json({ error: 'Cannot delete port that is used in calculations' });
-    }
-    
-    // Удаление порта
-    const query = `
-      DELETE FROM ports
-      WHERE id = $1
-      RETURNING *
-    `;
-    
-    const result = await pool.query(query, [id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Port not found' });
-    }
-    
-    res.json({ message: 'Port deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting port:', error);
-    res.status(500).json({ error: 'Failed to delete port' });
-  }
-});
+// Запуск сервера
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Инициализация системы при запуске сервера
+  // Инициализация системы при запуске
   await initializeSystem();
-});
-
-export default app;
-// Маршрут для получения типов контейнеров
-app.get('/api/container-types', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM container_types ORDER BY name');
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching container types:', error);
-    res.status(500).json({ error: 'Failed to fetch container types' });
-  }
 });
