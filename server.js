@@ -471,6 +471,278 @@ app.post('/api/fuel-surcharge', async (req, res) => {
   }
 });
 
+// ==================== АДМИНИСТРАТИВНЫЕ МАРШРУТЫ ====================
+
+// Маршрут для получения списка портов (административный)
+app.get('/api/admin/ports', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM ports ORDER BY name');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching ports for admin:', error);
+    res.status(500).json({ error: 'Failed to fetch ports' });
+  }
+});
+
+// Маршрут для получения информации о конкретном порте
+app.get('/api/admin/ports/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('SELECT * FROM ports WHERE id = $1', [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Port not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching port details:', error);
+    res.status(500).json({ error: 'Failed to fetch port details' });
+  }
+});
+
+// Маршрут для добавления нового порта
+app.post('/api/admin/ports', async (req, res) => {
+  try {
+    const { name, code, region, latitude, longitude } = req.body;
+    
+    // Проверка наличия всех необходимых параметров
+    if (!name || !code || !region) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+    
+    // Проверка уникальности кода порта
+    const checkResult = await pool.query('SELECT * FROM ports WHERE code = $1', [code]);
+    if (checkResult.rows.length > 0) {
+      return res.status(400).json({ error: 'Port with this code already exists' });
+    }
+    
+    // Добавление нового порта
+    const result = await pool.query(
+      'INSERT INTO ports (name, code, region, latitude, longitude) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, code, region, latitude || null, longitude || null]
+    );
+    
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error adding new port:', error);
+    res.status(500).json({ error: 'Failed to add new port' });
+  }
+});
+
+// Маршрут для обновления информации о порте
+app.put('/api/admin/ports/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, code, region, latitude, longitude } = req.body;
+    
+    // Проверка наличия всех необходимых параметров
+    if (!name || !code || !region) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+    
+    // Проверка уникальности кода порта (исключая текущий порт)
+    const checkResult = await pool.query('SELECT * FROM ports WHERE code = $1 AND id != $2', [code, id]);
+    if (checkResult.rows.length > 0) {
+      return res.status(400).json({ error: 'Another port with this code already exists' });
+    }
+    
+    // Обновление информации о порте
+    const result = await pool.query(
+      'UPDATE ports SET name = $1, code = $2, region = $3, latitude = $4, longitude = $5 WHERE id = $6 RETURNING *',
+      [name, code, region, latitude || null, longitude || null, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Port not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating port:', error);
+    res.status(500).json({ error: 'Failed to update port' });
+  }
+});
+
+// Маршрут для удаления порта
+app.delete('/api/admin/ports/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Проверка использования порта в истории расчетов
+    const checkResult = await pool.query(
+      'SELECT COUNT(*) FROM request_history WHERE origin_port_id = $1 OR destination_port_id = $1',
+      [id]
+    );
+    
+    if (parseInt(checkResult.rows[0].count) > 0) {
+      return res.status(400).json({ error: 'Cannot delete port that is used in calculation history' });
+    }
+    
+    // Удаление порта
+    const result = await pool.query('DELETE FROM ports WHERE id = $1 RETURNING *', [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Port not found' });
+    }
+    
+    res.json({ success: true, message: 'Port deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting port:', error);
+    res.status(500).json({ error: 'Failed to delete port' });
+  }
+});
+
+// Маршрут для получения истории расчетов (административный)
+app.get('/api/admin/calculations', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        rh.id, 
+        op.name as origin_port_name, 
+        dp.name as destination_port_name, 
+        rh.container_type, 
+        rh.weight, 
+        rh.rate, 
+        rh.email, 
+        rh.request_date as created_at
+      FROM 
+        request_history rh
+      JOIN 
+        ports op ON rh.origin_port_id = op.id
+      JOIN 
+        ports dp ON rh.destination_port_id = dp.id
+      ORDER BY 
+        rh.request_date DESC
+      LIMIT 100
+    `);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching calculation history for admin:', error);
+    res.status(500).json({ error: 'Failed to fetch calculation history' });
+  }
+});
+
+// Маршрут для удаления записи из истории расчетов
+app.delete('/api/admin/calculations/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query('DELETE FROM request_history WHERE id = $1 RETURNING *', [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Calculation record not found' });
+    }
+    
+    res.json({ success: true, message: 'Calculation record deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting calculation record:', error);
+    res.status(500).json({ error: 'Failed to delete calculation record' });
+  }
+});
+
+// Маршрут для получения настроек системы
+app.get('/api/admin/settings', async (req, res) => {
+  try {
+    // Проверка существования таблицы settings
+    const tableCheckResult = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'settings'
+      )
+    `);
+    
+    // Если таблица не существует, создаем ее с дефолтными настройками
+    if (!tableCheckResult.rows[0].exists) {
+      await pool.query(`
+        CREATE TABLE settings (
+          key VARCHAR(50) PRIMARY KEY,
+          value TEXT NOT NULL,
+          description TEXT,
+          updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      
+      // Добавление дефолтных настроек
+      await pool.query(`
+        INSERT INTO settings (key, value, description) VALUES
+        ('default_reliability', '0.7', 'Default reliability score when no data is available'),
+        ('scfi_weight', '1.2', 'Weight coefficient for SCFI data'),
+        ('fbx_weight', '1.2', 'Weight coefficient for FBX data'),
+        ('wci_weight', '1.2', 'Weight coefficient for WCI data')
+      `);
+    }
+    
+    // Получение всех настроек
+    const result = await pool.query('SELECT * FROM settings ORDER BY key');
+    
+    // Преобразование в объект для удобства использования
+    const settings = {};
+    result.rows.forEach(row => {
+      settings[row.key] = {
+        value: row.value,
+        description: row.description,
+        updatedAt: row.updated_at
+      };
+    });
+    
+    res.json(settings);
+  } catch (error) {
+    console.error('Error fetching settings:', error);
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
+});
+
+// Маршрут для обновления настроек системы
+app.post('/api/admin/settings', async (req, res) => {
+  try {
+    const settings = req.body;
+    
+    // Проверка формата данных
+    if (!settings || typeof settings !== 'object') {
+      return res.status(400).json({ error: 'Invalid settings format' });
+    }
+    
+    const results = {};
+    
+    // Обновление каждой настройки
+    for (const [key, value] of Object.entries(settings)) {
+      try {
+        const result = await pool.query(
+          'UPDATE settings SET value = $1, updated_at = NOW() WHERE key = $2 RETURNING *',
+          [value.toString(), key]
+        );
+        
+        if (result.rows.length === 0) {
+          // Если настройка не существует, добавляем ее
+          const insertResult = await pool.query(
+            'INSERT INTO settings (key, value, description) VALUES ($1, $2, $3) RETURNING *',
+            [key, value.toString(), `Custom setting: ${key}`]
+          );
+          
+          results[key] = { success: true, action: 'inserted' };
+        } else {
+          results[key] = { success: true, action: 'updated' };
+        }
+      } catch (error) {
+        console.error(`Error updating setting ${key}:`, error);
+        results[key] = { success: false, error: error.message };
+      }
+    }
+    
+    res.json(results);
+  } catch (error) {
+    console.error('Error updating settings:', error);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// Маршрут для административной страницы
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
 // Функция для сохранения запроса в историю
 async function saveRequestToHistory(originPort, destinationPort, containerType, weight, rate, email) {
   try {
@@ -487,8 +759,8 @@ async function saveRequestToHistory(originPort, destinationPort, containerType, 
       await pool.query(`
         CREATE TABLE request_history (
           id SERIAL PRIMARY KEY,
-          origin_port_id INTEGER NOT NULL,
-          destination_port_id INTEGER NOT NULL,
+          origin_port_id VARCHAR(10) NOT NULL,
+          destination_port_id VARCHAR(10) NOT NULL,
           container_type VARCHAR(10) NOT NULL,
           weight INTEGER NOT NULL,
           rate NUMERIC NOT NULL,
@@ -531,5 +803,9 @@ function validateEmail(email) {
 // Запуск сервера
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+  
+  // Инициализация системы при запуске сервера
   await initializeSystem();
 });
+
+export default app;
