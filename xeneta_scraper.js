@@ -1,9 +1,9 @@
 // Модуль для сбора данных из Xeneta Shipping Index (XSI)
 // Требует API-ключ для доступа к данным
 
-import axios from 'axios';
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
+const axios = require('axios');
+const { Pool } = require('pg');
+const dotenv = require('dotenv');
 
 // Загрузка переменных окружения
 dotenv.config();
@@ -287,7 +287,7 @@ async function getPortRegionById(portId) {
 }
 
 // Экспорт функций
-export default {
+module.exports = {
   fetchXSIData,
   getXSIDataForRoute
 };
