@@ -684,3 +684,13 @@ app.listen(PORT, async () => {
 });
 
 export default app;
+// Маршрут для получения типов контейнеров
+app.get('/api/container-types', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM container_types ORDER BY name');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching container types:', error);
+    res.status(500).json({ error: 'Failed to fetch container types' });
+  }
+});
