@@ -1,10 +1,10 @@
 // Модуль для сбора данных из Drewry World Container Index (WCI)
 // Использует публично доступные данные индекса WCI
 
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
+const axios = require('axios');
+const cheerio = require('cheerio');
+const { Pool } = require('pg');
+const dotenv = require('dotenv');
 
 // Загрузка переменных окружения
 dotenv.config();
@@ -278,8 +278,8 @@ function getMonthNumber(monthName) {
   return months[monthName.toLowerCase()] || '01';
 }
 
-// Экспорт функций
-export default {
+// Экспорт функций в формате CommonJS
+module.exports = {
   fetchWCIData,
   getWCIDataForRoute
 };
