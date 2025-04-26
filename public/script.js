@@ -143,6 +143,7 @@ async function handleFormSubmit(event) {
     }
     
     const result = await response.json();
+    console.log('API response:', result); // Добавляем логирование ответа API
     
     // Display results
     displayResults(data, result);
@@ -158,6 +159,8 @@ async function handleFormSubmit(event) {
 
 // Display calculation results
 function displayResults(data, result) {
+  console.log('Displaying results:', result); // Добавляем логирование для отладки
+  
   // Get port and container names
   const originSelect = document.getElementById('origin');
   const destinationSelect = document.getElementById('destination');
@@ -172,23 +175,39 @@ function displayResults(data, result) {
   document.getElementById('containerDisplay').textContent = containerTypeOption.textContent.split(' - ')[0];
   document.getElementById('dateDisplay').textContent = new Date().toLocaleDateString();
   
-  // Используем правильные имена свойств из ответа API
-  document.getElementById('minRate').textContent = `$${result.minRate || result.min_rate}`;
-  document.getElementById('maxRate').textContent = `$${result.maxRate || result.max_rate}`;
+  // Получаем значения ставок из ответа API
+  const minRateValue = result.minRate || result.min_rate || 0;
+  const maxRateValue = result.maxRate || result.max_rate || 0;
   
-  // Исправление для отображения средней ставки - используем свойство 'rate' из ответа API
+  // Определяем среднюю ставку из различных возможных свойств ответа API
+  let avgRateValue = 0;
+  if (result.rate !== undefined && result.rate !== null) {
+    avgRateValue = result.rate;
+  } else if (result.avgRate !== undefined && result.avgRate !== null) {
+    avgRateValue = result.avgRate;
+  } else if (result.avg_rate !== undefined && result.avg_rate !== null) {
+    avgRateValue = result.avg_rate;
+  } else {
+    // Если средняя ставка не найдена в ответе API, вычисляем её как среднее между минимальной и максимальной
+    avgRateValue = (parseFloat(minRateValue) + parseFloat(maxRateValue)) / 2;
+  }
+  
+  console.log('Rate values:', { minRateValue, maxRateValue, avgRateValue }); // Логируем значения для отладки
+  
+  // Обновляем отображение ставок
+  document.getElementById('minRate').textContent = `$${minRateValue}`;
+  document.getElementById('maxRate').textContent = `$${maxRateValue}`;
+  
+  // Обновляем среднюю ставку с гарантированным значением
   const avgRateElement = document.getElementById('avgRate');
   if (avgRateElement) {
-    avgRateElement.textContent = `$${result.rate || result.avgRate || result.avg_rate || 0}`;
+    avgRateElement.textContent = `$${avgRateValue}`;
+    console.log('Updated avgRate element with:', `$${avgRateValue}`); // Логируем обновление
+  } else {
+    console.error('avgRate element not found in DOM'); // Логируем ошибку, если элемент не найден
   }
   
-  // Рекомендуемая ставка (если элемент существует)
-  const recommendedRateElement = document.getElementById('recommendedRate');
-  if (recommendedRateElement) {
-    recommendedRateElement.textContent = `$${result.finalRate || result.recommendedRate || result.recommended_rate || result.rate || 0}`;
-  }
-  
-  // Добавляем обработку для sourceCount и reliability, которые могут отсутствовать в ответе API
+  // Обновляем дополнительную информацию
   const sourceCountElement = document.getElementById('sourceCount');
   if (sourceCountElement) {
     sourceCountElement.textContent = result.sourceCount || result.source_count || '3';
@@ -196,33 +215,46 @@ function displayResults(data, result) {
   
   const reliabilityElement = document.getElementById('reliability');
   if (reliabilityElement) {
-    const reliabilityValue = result.reliability || result.reliability_score || '85%';
-    reliabilityElement.textContent = reliabilityValue.toString().includes('%') ? reliabilityValue : `${reliabilityValue * 100}%`;
+    let reliabilityValue = result.reliability || result.reliability_score || 0.85;
+    // Преобразуем в процентный формат, если это не строка с процентами
+    if (typeof reliabilityValue === 'number') {
+      reliabilityValue = `${Math.round(reliabilityValue * 100)}%`;
+    } else if (!reliabilityValue.toString().includes('%')) {
+      reliabilityValue = `${reliabilityValue}%`;
+    }
+    reliabilityElement.textContent = reliabilityValue;
   }
   
   // Устанавливаем ширину индикатора ставки
   const rateIndicator = document.getElementById('rateIndicator');
   if (rateIndicator) {
-    const min = parseFloat(result.minRate || result.min_rate || 0);
-    const max = parseFloat(result.maxRate || result.max_rate || 0);
-    const avg = parseFloat(result.rate || result.avgRate || result.avg_rate || 0);
+    const min = parseFloat(minRateValue);
+    const max = parseFloat(maxRateValue);
+    const avg = parseFloat(avgRateValue);
     
     // Вычисляем процент для позиционирования индикатора
-    const percentage = (max > min && avg > 0) ? ((avg - min) / (max - min)) * 100 : 50;
+    let percentage = 50; // По умолчанию в середине
+    if (max > min && !isNaN(avg)) {
+      percentage = ((avg - min) / (max - min)) * 100;
+      // Ограничиваем значение от 0 до 100
+      percentage = Math.max(0, Math.min(100, percentage));
+    }
+    
+    console.log('Setting indicator width to:', `${percentage}%`); // Логируем установку ширины
     rateIndicator.style.width = `${percentage}%`;
+    
+    // Убедимся, что индикатор видим, установив минимальную ширину
+    if (percentage < 5) {
+      rateIndicator.style.minWidth = '5%';
+    }
   }
   
-  // Show results section - проверяем наличие элемента с правильным ID
-  const resultsSection = document.getElementById('resultsSection');
+  // Показываем контейнер с результатами
   const resultContainer = document.getElementById('resultContainer');
-  
-  // Используем тот элемент, который существует на странице
-  const resultElement = resultsSection || resultContainer;
-  
-  if (resultElement) {
-    resultElement.classList.remove('hidden');
-    resultElement.scrollIntoView({ behavior: 'smooth' });
+  if (resultContainer) {
+    resultContainer.classList.remove('hidden');
+    resultContainer.scrollIntoView({ behavior: 'smooth' });
   } else {
-    console.error('Results container element not found. Check HTML for resultsSection or resultContainer element.');
+    console.error('resultContainer element not found in DOM');
   }
 }
