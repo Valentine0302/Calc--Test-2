@@ -1,8 +1,8 @@
 // Модуль для анализа сезонности ставок фрахта
 // Создает и анализирует базу исторических данных для выявления сезонных паттернов
 
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
+const { Pool } = require('pg');
+const dotenv = require('dotenv');
 
 // Загрузка переменных окружения
 dotenv.config();
@@ -477,30 +477,49 @@ async function analyzeSeasonality() {
             
             const allMonthsResult = await client.query(allMonthsQuery, [originRegion, destinationRegion]);
             
-            // Расчет среднего значения для текущего месяца
-            const monthRates = monthResult.rows.map(row => parseFloat(row.rate));
-            const monthAverage = monthRates.reduce((sum, rate) => sum + rate, 0) / monthRates.length;
+            if (allMonthsResult.rows.length === 0) {
+              console.log(`No data for ${originRegion} → ${destinationRegion}`);
+              continue;
+            }
             
-            // Расчет среднего значения для всех месяцев
+            // Расчет средней ставки для текущего месяца
+            const monthRates = monthResult.rows.map(row => parseFloat(row.rate));
+            const monthAvg = monthRates.reduce((sum, rate) => sum + rate, 0) / monthRates.length;
+            
+            // Расчет средней ставки для всех месяцев
             const allRates = allMonthsResult.rows.map(row => parseFloat(row.rate));
-            const allAverage = allRates.reduce((sum, rate) => sum + rate, 0) / allRates.length;
+            const allAvg = allRates.reduce((sum, rate) => sum + rate, 0) / allRates.length;
             
             // Расчет сезонного коэффициента
-            const seasonalityFactor = monthAverage / allAverage;
+            const seasonalityFactor = allAvg > 0 ? monthAvg / allAvg : 1.0;
             
             // Расчет доверительного интервала
-            const confidence = Math.min(1.0, monthRates.length / 30);
+            const confidence = Math.min(1.0, monthRates.length / 100);
             
             // Сохранение коэффициента сезонности в базу данных
-            await saveSeasonalityFactor(originRegion, destinationRegion, month, seasonalityFactor, confidence);
+            await client.query(
+              `INSERT INTO seasonality_factors 
+               (origin_region, destination_region, month, seasonality_factor, confidence, last_updated) 
+               VALUES ($1, $2, $3, $4, $5, NOW())
+               ON CONFLICT (origin_region, destination_region, month) 
+               DO UPDATE SET 
+                 seasonality_factor = $4, 
+                 confidence = $5, 
+                 last_updated = NOW()`,
+              [originRegion, destinationRegion, month, seasonalityFactor, confidence]
+            );
+            
+            console.log(`Seasonality factor for ${originRegion} → ${destinationRegion}, month ${month}: ${seasonalityFactor.toFixed(2)} (confidence: ${confidence.toFixed(2)})`);
           } catch (error) {
-            console.error(`Error analyzing seasonality for ${originRegion} → ${destinationRegion} in month ${month}:`, error);
-            // Продолжаем анализ для других месяцев
+            console.error(`Error analyzing seasonality for ${originRegion} → ${destinationRegion}, month ${month}:`, error);
+            // Не пробрасываем ошибку дальше, чтобы не прерывать анализ других месяцев
+            console.log(`Continuing analysis for other months despite error in month ${month}`);
           }
         }
       } catch (error) {
         console.error(`Error analyzing seasonality for ${originRegion} → ${destinationRegion}:`, error);
-        // Продолжаем анализ для других пар регионов
+        // Не пробрасываем ошибку дальше, чтобы не прерывать анализ других пар регионов
+        console.log('Continuing analysis for other region pairs despite error');
       }
     }
     
@@ -512,42 +531,6 @@ async function analyzeSeasonality() {
   } finally {
     // Освобождение клиента
     client.release();
-  }
-}
-
-// Функция для сохранения коэффициента сезонности в базу данных
-async function saveSeasonalityFactor(originRegion, destinationRegion, month, seasonalityFactor, confidence) {
-  try {
-    console.log(`Saving seasonality factor for ${originRegion} → ${destinationRegion}, month ${month}`);
-    
-    // Округление коэффициента до двух знаков после запятой
-    const roundedFactor = Math.round(seasonalityFactor * 100) / 100;
-    
-    // Вставка или обновление коэффициента в базе данных
-    const query = `
-      INSERT INTO seasonality_factors 
-      (origin_region, destination_region, month, seasonality_factor, confidence, last_updated) 
-      VALUES ($1, $2, $3, $4, $5, NOW())
-      ON CONFLICT (origin_region, destination_region, month) 
-      DO UPDATE SET 
-        seasonality_factor = $4,
-        confidence = $5,
-        last_updated = NOW()
-    `;
-    
-    await pool.query(query, [
-      originRegion,
-      destinationRegion,
-      month,
-      roundedFactor,
-      confidence
-    ]);
-    
-    console.log(`Seasonality factor saved for ${originRegion} → ${destinationRegion}, month ${month}`);
-  } catch (error) {
-    console.error(`Error saving seasonality factor for ${originRegion} → ${destinationRegion}, month ${month}:`, error);
-    // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
-    console.log('Continuing initialization despite error in saving seasonality factor');
   }
 }
 
@@ -563,18 +546,133 @@ async function getSeasonalityFactor(originPort, destinationPort, month) {
     
     const portRegionsResult = await pool.query(portRegionsQuery, [originPort, destinationPort]);
     
-    if (!portRegionsResult.rows[0] || !portRegionsResult.rows[0].origin_region || !portRegionsResult.row
-// Экспорт функций
-export {
-  initializeAndUpdateSeasonalityData,
-  getSeasonalityFactor,
-  getAllSeasonalityFactors,
-  getHistoricalRatesForVisualization,
-  analyzeSeasonalityFactors
-};
+    if (!portRegionsResult.rows[0] || !portRegionsResult.rows[0].origin_region || !portRegionsResult.rows[0].destination_region) {
+      console.log(`Could not determine regions for ports ${originPort} and ${destinationPort}`);
+      return 1.0; // Значение по умолчанию
+    }
+    
+    const originRegion = portRegionsResult.rows[0].origin_region;
+    const destinationRegion = portRegionsResult.rows[0].destination_region;
+    
+    // Получение коэффициента сезонности из базы данных
+    const factorQuery = `
+      SELECT seasonality_factor 
+      FROM seasonality_factors 
+      WHERE origin_region = $1 
+        AND destination_region = $2 
+        AND month = $3
+    `;
+    
+    const factorResult = await pool.query(factorQuery, [originRegion, destinationRegion, month]);
+    
+    if (factorResult.rows.length === 0) {
+      console.log(`No seasonality factor found for ${originRegion} → ${destinationRegion}, month ${month}`);
+      return 1.0; // Значение по умолчанию
+    }
+    
+    return parseFloat(factorResult.rows[0].seasonality_factor);
+  } catch (error) {
+    console.error(`Error getting seasonality factor for ${originPort} → ${destinationPort}, month ${month}:`, error);
+    return 1.0; // Значение по умолчанию в случае ошибки
+  }
+}
 
-// Добавляем экспорт по умолчанию
-export default {
+// Функция для получения всех коэффициентов сезонности
+async function getAllSeasonalityFactors() {
+  try {
+    const query = `
+      SELECT 
+        origin_region, 
+        destination_region, 
+        month, 
+        seasonality_factor, 
+        confidence,
+        last_updated
+      FROM seasonality_factors
+      ORDER BY origin_region, destination_region, month
+    `;
+    
+    const result = await pool.query(query);
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting all seasonality factors:', error);
+    return [];
+  }
+}
+
+// Функция для получения исторических данных о ставках для визуализации
+async function getHistoricalRatesForVisualization(originRegion, destinationRegion, containerType, months) {
+  try {
+    // Получение данных за указанное количество месяцев
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setMonth(startDate.getMonth() - months);
+    
+    const query = `
+      SELECT 
+        date, 
+        AVG(rate) as avg_rate,
+        COUNT(*) as data_points
+      FROM historical_rates 
+      WHERE origin_region = $1 
+        AND destination_region = $2 
+        AND container_type = $3
+        AND date >= $4
+      GROUP BY date
+      ORDER BY date
+    `;
+    
+    const result = await pool.query(query, [
+      originRegion,
+      destinationRegion,
+      containerType,
+      startDate.toISOString().split('T')[0]
+    ]);
+    
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting historical rates for visualization:', error);
+    return [];
+  }
+}
+
+// Функция для инициализации и обновления всех данных для анализа сезонности
+async function initializeAndUpdateSeasonalityData() {
+  try {
+    console.log('Initializing and updating seasonality data...');
+    
+    // Инициализация таблиц
+    await initializeSeasonalityTables();
+    
+    // Импорт исторических данных о ставках
+    await importHistoricalRates();
+    
+    // Анализ сезонности
+    await analyzeSeasonality();
+    
+    console.log('Seasonality data initialization and update completed');
+    return true;
+  } catch (error) {
+    console.error('Error initializing and updating seasonality data:', error);
+    // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию системы
+    console.log('Continuing system initialization despite seasonality data error');
+    return false;
+  }
+}
+
+// Функция для анализа сезонности (публичная, вызывается из API)
+async function analyzeSeasonalityFactors() {
+  try {
+    await analyzeSeasonality();
+    return true;
+  } catch (error) {
+    console.error('Error in analyzeSeasonalityFactors:', error);
+    return false;
+  }
+}
+
+// Экспорт функций в формате CommonJS
+module.exports = {
   initializeAndUpdateSeasonalityData,
   getSeasonalityFactor,
   getAllSeasonalityFactors,
