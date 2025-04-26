@@ -1,5 +1,5 @@
-// Модуль для анализа сезонности ставок фрахта
-// Создает и анализирует базу исторических данных для выявления сезонных паттернов
+// Модуль для расчета топливных надбавок
+// Анализирует цены на топливо и рассчитывает соответствующие надбавки к ставкам фрахта
 
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
@@ -16,758 +16,184 @@ const pool = new Pool({
   }
 });
 
-// Функция для инициализации таблиц для анализа сезонности
-async function initializeSeasonalityTables() {
+// Функция для инициализации таблиц для расчета топливных надбавок
+async function initializeFuelSurchargeTables() {
   const client = await pool.connect();
   
   try {
     // Начало транзакции
     await client.query('BEGIN');
     
-    // Создание таблицы для хранения исторических данных о ставках
-    // ВАЖНО: Используем origin_port_id и destination_port_id вместо origin_port и destination_port
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS historical_rates (
-        id SERIAL PRIMARY KEY,
-        origin_port_id VARCHAR(10) NOT NULL,
-        destination_port_id VARCHAR(10) NOT NULL,
-        origin_region VARCHAR(50),
-        destination_region VARCHAR(50),
-        container_type VARCHAR(10) NOT NULL,
-        rate NUMERIC NOT NULL,
-        date DATE NOT NULL,
-        source VARCHAR(50),
-        UNIQUE(origin_port_id, destination_port_id, container_type, date, source)
+    // Проверка существования таблицы fuel_prices
+    const tableCheckQuery = `
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'fuel_prices'
       )
-    `);
+    `;
     
-    // Создание таблицы для хранения коэффициентов сезонности
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS seasonality_factors (
-        id SERIAL PRIMARY KEY,
-        origin_region VARCHAR(50) NOT NULL,
-        destination_region VARCHAR(50) NOT NULL,
-        month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
-        seasonality_factor NUMERIC NOT NULL,
-        confidence NUMERIC NOT NULL,
-        last_updated TIMESTAMP NOT NULL DEFAULT NOW(),
-        UNIQUE(origin_region, destination_region, month)
-      )
-    `);
+    const tableExists = await client.query(tableCheckQuery);
     
-    // Создание таблицы для хранения цен на топливо
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS fuel_prices (
-        id SERIAL PRIMARY KEY,
-        price NUMERIC NOT NULL,
-        date DATE NOT NULL,
-        source VARCHAR(50),
-        fuel_type VARCHAR(50) DEFAULT 'VLSFO',
-        UNIQUE(date, source)
-      )
-    `);
+    if (!tableExists.rows[0].exists) {
+      // Создание таблицы для хранения цен на топливо
+      await client.query(`
+        CREATE TABLE fuel_prices (
+          id SERIAL PRIMARY KEY,
+          price NUMERIC NOT NULL,
+          date DATE NOT NULL,
+          source VARCHAR(50),
+          fuel_type VARCHAR(50) DEFAULT 'VLSFO',
+          UNIQUE(date, source)
+        )
+      `);
+    } else {
+      // Проверяем наличие колонки fuel_type
+      const columnCheckQuery = `
+        SELECT EXISTS (
+          SELECT FROM information_schema.columns 
+          WHERE table_name = 'fuel_prices' AND column_name = 'fuel_type'
+        )
+      `;
+      
+      const columnExists = await client.query(columnCheckQuery);
+      
+      if (!columnExists.rows[0].exists) {
+        // Добавляем колонку fuel_type, если её нет
+        await client.query(`
+          ALTER TABLE fuel_prices 
+          ADD COLUMN fuel_type VARCHAR(50) DEFAULT 'VLSFO'
+        `);
+      }
+    }
     
-    // Создание таблицы для хранения расстояний между портами
+    // Создание таблицы для хранения коэффициентов топливных надбавок
     await client.query(`
-      CREATE TABLE IF NOT EXISTS port_distances (
+      CREATE TABLE IF NOT EXISTS fuel_surcharge_factors (
         id SERIAL PRIMARY KEY,
-        origin_port VARCHAR(10) NOT NULL,
-        destination_port VARCHAR(10) NOT NULL,
-        distance NUMERIC NOT NULL,
-        UNIQUE(origin_port, destination_port)
+        base_price NUMERIC NOT NULL,
+        price_range NUMERIC NOT NULL,
+        surcharge_factor NUMERIC NOT NULL,
+        last_updated TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
     
     // Завершение транзакции
     await client.query('COMMIT');
     
-    console.log('Seasonality tables initialized successfully');
+    console.log('Fuel surcharge tables initialized successfully');
   } catch (error) {
     // Откат транзакции в случае ошибки
     await client.query('ROLLBACK');
-    console.error('Error initializing seasonality tables:', error);
+    console.error('Error initializing fuel surcharge tables:', error);
     // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
-    console.log('Continuing initialization despite error in seasonality tables');
   } finally {
     // Освобождение клиента
     client.release();
   }
 }
 
-// Функция для импорта исторических данных о ставках
-async function importHistoricalRates() {
+// Функция для получения текущей цены на топливо
+async function getCurrentFuelPrice() {
   try {
-    console.log('Importing historical rates data...');
-    
-    // Импорт данных из таблицы calculation_history
-    await importHistoricalDataFromCalculationHistory();
-    
-    // Дополнение данных синтетическими, если исторических данных недостаточно
-    const countQuery = 'SELECT COUNT(*) FROM historical_rates';
-    const countResult = await pool.query(countQuery);
-    
-    if (countResult.rows[0].count < 1000) {
-      console.log('Not enough historical data, generating synthetic data...');
-      await generateSyntheticHistoricalData();
-    }
-  } catch (error) {
-    console.error('Error in importHistoricalRates:', error);
-    // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
-    console.log('Continuing initialization despite error in historical rates import');
-  }
-}
-
-// Улучшенная функция для импорта исторических данных из calculation_history
-async function importHistoricalDataFromCalculationHistory() {
-  try {
-    console.log('Importing historical data from calculation_history');
-    
-    // Проверяем существование таблицы
-    const tableCheckQuery = `
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_name = 'calculation_history'
-      )
-    `;
-    
-    const tableExists = await pool.query(tableCheckQuery);
-    if (!tableExists.rows[0].exists) {
-      console.log('Table calculation_history does not exist, skipping import');
-      return;
-    }
-    
-    // Проверяем структуру таблицы
-    const columnsQuery = `
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_name = 'calculation_history'
-    `;
-    
-    const columnsResult = await pool.query(columnsQuery);
-    const columns = columnsResult.rows.map(row => row.column_name);
-    
-    // Если таблица пуста или не содержит нужных колонок, пропускаем импорт
-    if (columns.length === 0) {
-      console.log('Table calculation_history has no columns, skipping import');
-      return;
-    }
-    
-    // Формируем запрос в зависимости от доступных колонок
-    let historyQuery;
-    
-    if (columns.includes('origin_port_id') && columns.includes('destination_port_id')) {
-      historyQuery = `
-        SELECT 
-          origin_port_id, 
-          destination_port_id, 
-          container_type, 
-          rate, 
-          created_at,
-          sources
-        FROM calculation_history
-        ORDER BY created_at
-      `;
-    } else if (columns.includes('origin_port') && columns.includes('destination_port')) {
-      historyQuery = `
-        SELECT 
-          origin_port, 
-          destination_port, 
-          container_type, 
-          rate, 
-          created_at,
-          sources
-        FROM calculation_history
-        ORDER BY created_at
-      `;
-    } else {
-      console.log('Table calculation_history does not have required columns, skipping import');
-      return;
-    }
-    
-    const historyResult = await pool.query(historyQuery);
-    
-    if (historyResult.rows.length === 0) {
-      console.log('No historical data found in calculation_history');
-      return;
-    }
-    
-    // Получение информации о регионах портов
-    const portRegions = await getPortRegions();
-    
-    // Импорт данных из calculation_history в historical_rates
-    const client = await pool.connect();
-    
-    try {
-      // Начало транзакции
-      await client.query('BEGIN');
-      
-      for (const row of historyResult.rows) {
-        const originPort = row.origin_port_id || row.origin_port;
-        const destPort = row.destination_port_id || row.destination_port;
-        const originRegion = portRegions[originPort] || 'Unknown';
-        const destinationRegion = portRegions[destPort] || 'Unknown';
-        const date = new Date(row.created_at).toISOString().split('T')[0];
-        const source = row.sources || 'calculation_history';
-        
-        // Вставка данных в таблицу historical_rates
-        // ВАЖНО: Используем origin_port_id и destination_port_id вместо origin_port и destination_port
-        await client.query(
-          `INSERT INTO historical_rates 
-           (origin_port_id, destination_port_id, origin_region, destination_region, container_type, rate, date, source) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (origin_port_id, destination_port_id, container_type, date, source) 
-           DO UPDATE SET 
-             rate = $6,
-             origin_region = $3,
-             destination_region = $4`,
-          [
-            originPort,
-            destPort,
-            originRegion,
-            destinationRegion,
-            row.container_type,
-            row.rate,
-            date,
-            source
-          ]
-        );
-      }
-      
-      // Завершение транзакции
-      await client.query('COMMIT');
-      
-      console.log(`Imported ${historyResult.rows.length} historical rates from calculation_history`);
-    } catch (error) {
-      // Откат транзакции в случае ошибки
-      await client.query('ROLLBACK');
-      console.error('Error importing historical rates:', error);
-      // Не пробрасываем ошибку дальше
-    } finally {
-      // Освобождение клиента
-      client.release();
-    }
-  } catch (error) {
-    console.error('Error importing historical data from calculation_history:', error);
-    // Важно: не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
-    console.log('Continuing initialization despite error in historical data import');
-  }
-}
-
-// Функция для генерации синтетических исторических данных
-async function generateSyntheticHistoricalData() {
-  try {
-    console.log('Generating synthetic historical data...');
-    
-    // Получение списка всех портов
-    const portsQuery = 'SELECT id, region FROM ports';
-    const portsResult = await pool.query(portsQuery);
-    
-    if (portsResult.rows.length === 0) {
-      console.log('No ports found in database');
-      return;
-    }
-    
-    // Создание массива популярных маршрутов
-    const popularRoutes = [];
-    
-    // Добавление маршрутов Азия -> Европа
-    const asiaPorts = portsResult.rows.filter(port => port.region === 'Asia');
-    const europePorts = portsResult.rows.filter(port => port.region === 'Europe');
-    
-    for (let i = 0; i < Math.min(5, asiaPorts.length); i++) {
-      for (let j = 0; j < Math.min(5, europePorts.length); j++) {
-        popularRoutes.push({
-          origin: asiaPorts[i].id,
-          destination: europePorts[j].id,
-          originRegion: 'Asia',
-          destinationRegion: 'Europe'
-        });
-      }
-    }
-    
-    // Добавление маршрутов Азия -> Северная Америка
-    const northAmericaPorts = portsResult.rows.filter(port => port.region === 'North America');
-    
-    for (let i = 0; i < Math.min(5, asiaPorts.length); i++) {
-      for (let j = 0; j < Math.min(5, northAmericaPorts.length); j++) {
-        popularRoutes.push({
-          origin: asiaPorts[i].id,
-          destination: northAmericaPorts[j].id,
-          originRegion: 'Asia',
-          destinationRegion: 'North America'
-        });
-      }
-    }
-    
-    // Добавление маршрутов Европа -> Северная Америка
-    for (let i = 0; i < Math.min(5, europePorts.length); i++) {
-      for (let j = 0; j < Math.min(5, northAmericaPorts.length); j++) {
-        popularRoutes.push({
-          origin: europePorts[i].id,
-          destination: northAmericaPorts[j].id,
-          originRegion: 'Europe',
-          destinationRegion: 'North America'
-        });
-      }
-    }
-    
-    // Типы контейнеров
-    const containerTypes = ['20DV', '40DV', '40HC'];
-    
-    // Генерация данных за последние 3 года
-    const endDate = new Date();
-    const startDate = new Date(endDate);
-    startDate.setFullYear(endDate.getFullYear() - 3);
-    
-    // Массив для хранения сгенерированных данных
-    const syntheticData = [];
-    
-    // Генерация данных для каждого маршрута
-    for (const route of popularRoutes) {
-      for (const containerType of containerTypes) {
-        // Генерация базовой ставки для маршрута
-        const baseRate = 1000 + Math.random() * 2000;
-        
-        // Генерация данных для каждого месяца
-        let currentDate = new Date(startDate);
-        
-        while (currentDate <= endDate) {
-          // Расчет сезонного коэффициента
-          const month = currentDate.getMonth() + 1;
-          const seasonalFactor = getSeasonalFactorForMonth(month);
-          
-          // Расчет годового тренда (рост ставок со временем)
-          const yearsSinceStart = (currentDate - startDate) / (365 * 24 * 60 * 60 * 1000);
-          const trendFactor = 1 + yearsSinceStart * 0.1; // 10% рост в год
-          
-          // Добавление случайной вариации
-          const randomFactor = 0.9 + Math.random() * 0.2; // ±10% случайная вариация
-          
-          // Расчет итоговой ставки
-          const rate = Math.round(baseRate * seasonalFactor * trendFactor * randomFactor);
-          
-          // Форматирование даты
-          const date = currentDate.toISOString().split('T')[0];
-          
-          // Добавление данных в массив
-          syntheticData.push({
-            origin_port_id: route.origin,
-            destination_port_id: route.destination,
-            origin_region: route.originRegion,
-            destination_region: route.destinationRegion,
-            container_type: containerType,
-            rate,
-            date,
-            source: 'synthetic'
-          });
-          
-          // Переход к следующему месяцу
-          currentDate.setMonth(currentDate.getMonth() + 1);
-        }
-      }
-    }
-    
-    // Сохранение сгенерированных данных в базу данных
-    const client = await pool.connect();
-    
-    try {
-      // Начало транзакции
-      await client.query('BEGIN');
-      
-      for (const data of syntheticData) {
-        // Вставка данных в таблицу historical_rates
-        // ВАЖНО: Используем origin_port_id и destination_port_id вместо origin_port и destination_port
-        await client.query(
-          `INSERT INTO historical_rates 
-           (origin_port_id, destination_port_id, origin_region, destination_region, container_type, rate, date, source) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (origin_port_id, destination_port_id, container_type, date, source) 
-           DO NOTHING`,
-          [
-            data.origin_port_id,
-            data.destination_port_id,
-            data.origin_region,
-            data.destination_region,
-            data.container_type,
-            data.rate,
-            data.date,
-            data.source
-          ]
-        );
-      }
-      
-      // Завершение транзакции
-      await client.query('COMMIT');
-      
-      console.log(`Generated and saved ${syntheticData.length} synthetic historical rates`);
-    } catch (error) {
-      // Откат транзакции в случае ошибки
-      await client.query('ROLLBACK');
-      console.error('Error saving synthetic historical rates:', error);
-      // Не пробрасываем ошибку дальше
-    } finally {
-      // Освобождение клиента
-      client.release();
-    }
-  } catch (error) {
-    console.error('Error generating synthetic historical data:', error);
-    // Не пробрасываем ошибку дальше
-  }
-}
-
-// Функция для получения сезонного коэффициента для месяца
-function getSeasonalFactorForMonth(month) {
-  // Сезонные коэффициенты по месяцам (пик в летние месяцы)
-  const seasonalFactors = {
-    1: 0.95,  // Январь
-    2: 0.90,  // Февраль
-    3: 0.95,  // Март
-    4: 1.00,  // Апрель
-    5: 1.05,  // Май
-    6: 1.10,  // Июнь
-    7: 1.15,  // Июль
-    8: 1.15,  // Август
-    9: 1.10,  // Сентябрь
-    10: 1.05, // Октябрь
-    11: 1.00, // Ноябрь
-    12: 0.95  // Декабрь
-  };
-  
-  return seasonalFactors[month] || 1.0;
-}
-
-// Функция для получения регионов всех портов
-async function getPortRegions() {
-  try {
-    const query = 'SELECT id, region FROM ports';
-    const result = await pool.query(query);
-    
-    // Создание объекта с регионами портов
-    const portRegions = {};
-    
-    for (const row of result.rows) {
-      portRegions[row.id] = row.region;
-    }
-    
-    return portRegions;
-  } catch (error) {
-    console.error('Error getting port regions:', error);
-    return {};
-  }
-}
-
-// Функция для анализа сезонности и расчета коэффициентов
-async function analyzeSeasonality() {
-  try {
-    console.log('Analyzing seasonality patterns...');
-    
-    // Получение уникальных пар регионов
-    const regionsQuery = `
-      SELECT DISTINCT origin_region, destination_region 
-      FROM historical_rates 
-      WHERE origin_region IS NOT NULL AND destination_region IS NOT NULL
-    `;
-    
-    const regionsResult = await pool.query(regionsQuery);
-    
-    if (regionsResult.rows.length === 0) {
-      console.log('No region pairs found in historical data');
-      return;
-    }
-    
-    // Анализ сезонности для каждой пары регионов
-    for (const regionPair of regionsResult.rows) {
-      const originRegion = regionPair.origin_region;
-      const destinationRegion = regionPair.destination_region;
-      
-      console.log(`Analyzing seasonality for ${originRegion} → ${destinationRegion}...`);
-      
-      // Анализ сезонности для каждого месяца
-      for (let month = 1; month <= 12; month++) {
-        // Получение данных для текущего месяца
-        const monthQuery = `
-          SELECT rate 
-          FROM historical_rates 
-          WHERE origin_region = $1 
-            AND destination_region = $2 
-            AND EXTRACT(MONTH FROM date) = $3
-        `;
-        
-        const monthResult = await pool.query(monthQuery, [originRegion, destinationRegion, month]);
-        
-        if (monthResult.rows.length === 0) {
-          console.log(`No data for ${originRegion} → ${destinationRegion} in month ${month}`);
-          continue;
-        }
-        
-        // Получение данных для всех месяцев
-        const allMonthsQuery = `
-          SELECT rate 
-          FROM historical_rates 
-          WHERE origin_region = $1 
-            AND destination_region = $2
-        `;
-        
-        const allMonthsResult = await pool.query(allMonthsQuery, [originRegion, destinationRegion]);
-        
-        // Расчет среднего значения для текущего месяца
-        const monthRates = monthResult.rows.map(row => row.rate);
-        const monthAverage = monthRates.reduce((sum, rate) => sum + rate, 0) / monthRates.length;
-        
-        // Расчет среднего значения для всех месяцев
-        const allRates = allMonthsResult.rows.map(row => row.rate);
-        const allAverage = allRates.reduce((sum, rate) => sum + rate, 0) / allRates.length;
-        
-        // Расчет сезонного коэффициента
-        const seasonalityFactor = monthAverage / allAverage;
-        
-        // Расчет доверительного интервала
-        const confidence = Math.min(1.0, monthRates.length / 30);
-        
-        // Сохранение коэффициента сезонности в базу данных
-        await saveSeasonalityFactor(originRegion, destinationRegion, month, seasonalityFactor, confidence);
-      }
-    }
-    
-    console.log('Seasonality analysis completed');
-  } catch (error) {
-    console.error('Error analyzing seasonality:', error);
-    // Не пробрасываем ошибку дальше
-  }
-}
-
-// Функция для сохранения коэффициента сезонности в базу данных
-async function saveSeasonalityFactor(originRegion, destinationRegion, month, seasonalityFactor, confidence) {
-  try {
-    // Округление коэффициента до двух знаков после запятой
-    const roundedFactor = Math.round(seasonalityFactor * 100) / 100;
-    
-    // Вставка или обновление коэффициента в базе данных
+    // Получение последней цены на топливо из базы данных
     const query = `
-      INSERT INTO seasonality_factors 
-      (origin_region, destination_region, month, seasonality_factor, confidence, last_updated) 
-      VALUES ($1, $2, $3, $4, $5, NOW())
-      ON CONFLICT (origin_region, destination_region, month) 
-      DO UPDATE SET 
-        seasonality_factor = $4,
-        confidence = $5,
-        last_updated = NOW()
-    `;
-    
-    await pool.query(query, [originRegion, destinationRegion, month, roundedFactor, confidence]);
-    
-    console.log(`Saved seasonality factor for ${originRegion} → ${destinationRegion}, month ${month}: ${roundedFactor} (confidence: ${confidence})`);
-  } catch (error) {
-    console.error('Error saving seasonality factor:', error);
-    // Не пробрасываем ошибку дальше
-  }
-}
-
-// Функция для получения коэффициента сезонности для конкретного маршрута и месяца
-async function getSeasonalityFactor(originPort, destinationPort, month) {
-  try {
-    // Если месяц не указан, используем текущий месяц
-    const currentMonth = month || (new Date().getMonth() + 1);
-    
-    // Получение регионов портов
-    const originRegion = await getPortRegionById(originPort);
-    const destinationRegion = await getPortRegionById(destinationPort);
-    
-    // Запрос к базе данных для получения коэффициента сезонности
-    const query = `
-      SELECT seasonality_factor, confidence 
-      FROM seasonality_factors 
-      WHERE origin_region = $1 
-        AND destination_region = $2 
-        AND month = $3
-    `;
-    
-    const result = await pool.query(query, [originRegion, destinationRegion, currentMonth]);
-    
-    // Если коэффициент найден и имеет достаточную достоверность, возвращаем его
-    if (result.rows.length > 0 && result.rows[0].confidence >= 0.5) {
-      return {
-        factor: result.rows[0].seasonality_factor,
-        confidence: result.rows[0].confidence
-      };
-    }
-    
-    // Если коэффициент не найден или имеет низкую достоверность, ищем для более общих регионов
-    const fallbackQuery = `
-      SELECT seasonality_factor, confidence 
-      FROM seasonality_factors 
-      WHERE (origin_region = 'Any' OR origin_region = $1) 
-        AND (destination_region = 'Any' OR destination_region = $2) 
-        AND month = $3
-      ORDER BY 
-        CASE 
-          WHEN origin_region = $1 AND destination_region = $2 THEN 1
-          WHEN origin_region = $1 THEN 2
-          WHEN destination_region = $2 THEN 3
-          ELSE 4
-        END,
-        confidence DESC
+      SELECT price 
+      FROM fuel_prices 
+      ORDER BY date DESC 
       LIMIT 1
     `;
     
-    const fallbackResult = await pool.query(fallbackQuery, [originRegion, destinationRegion, currentMonth]);
+    const result = await pool.query(query);
     
-    if (fallbackResult.rows.length > 0) {
+    if (result.rows.length === 0) {
+      console.log('No fuel price data found, using default price');
+      return 600; // Значение по умолчанию, если данных нет
+    }
+    
+    return result.rows[0].price;
+  } catch (error) {
+    console.error('Error getting current fuel price:', error);
+    return 600; // Значение по умолчанию в случае ошибки
+  }
+}
+
+// Функция для расчета топливной надбавки
+async function calculateFuelSurcharge(baseRate, distance) {
+  try {
+    // Получение текущей цены на топливо
+    const currentFuelPrice = await getCurrentFuelPrice();
+    
+    // Получение коэффициентов топливных надбавок из базы данных
+    const factorsQuery = `
+      SELECT base_price, price_range, surcharge_factor 
+      FROM fuel_surcharge_factors 
+      ORDER BY base_price
+    `;
+    
+    const factorsResult = await pool.query(factorsQuery);
+    
+    // Если коэффициенты не найдены, используем значения по умолчанию
+    if (factorsResult.rows.length === 0) {
+      // Расчет надбавки по формуле по умолчанию
+      // Базовая цена на топливо - 500 долларов за тонну
+      // Каждые 100 долларов сверх базовой цены добавляют 3% к ставке
+      const baseFuelPrice = 500;
+      const priceRange = 100;
+      const surchargeFactorPerRange = 0.03;
+      
+      const priceAboveBase = Math.max(0, currentFuelPrice - baseFuelPrice);
+      const surchargePercentage = (priceAboveBase / priceRange) * surchargeFactorPerRange;
+      
+      // Расчет надбавки с учетом расстояния
+      // Чем больше расстояние, тем больше влияние топливной надбавки
+      const distanceFactor = Math.min(1.0, distance / 10000);
+      const adjustedSurchargePercentage = surchargePercentage * distanceFactor;
+      
+      const surchargeAmount = baseRate * adjustedSurchargePercentage;
+      
       return {
-        factor: fallbackResult.rows[0].seasonality_factor,
-        confidence: fallbackResult.rows[0].confidence
+        amount: Math.round(surchargeAmount),
+        percentage: Math.round(adjustedSurchargePercentage * 100),
+        fuelPrice: currentFuelPrice
       };
     }
     
-    // Если коэффициент не найден, используем значение по умолчанию
+    // Поиск подходящего диапазона цен
+    let surchargePercentage = 0;
+    
+    for (const factor of factorsResult.rows) {
+      const baseFuelPrice = factor.base_price;
+      const priceRange = factor.price_range;
+      const surchargeFactorPerRange = factor.surcharge_factor;
+      
+      const priceAboveBase = Math.max(0, currentFuelPrice - baseFuelPrice);
+      surchargePercentage += (priceAboveBase / priceRange) * surchargeFactorPerRange;
+    }
+    
+    // Расчет надбавки с учетом расстояния
+    const distanceFactor = Math.min(1.0, distance / 10000);
+    const adjustedSurchargePercentage = surchargePercentage * distanceFactor;
+    
+    const surchargeAmount = baseRate * adjustedSurchargePercentage;
+    
     return {
-      factor: getSeasonalFactorForMonth(currentMonth),
-      confidence: 0.5
+      amount: Math.round(surchargeAmount),
+      percentage: Math.round(adjustedSurchargePercentage * 100),
+      fuelPrice: currentFuelPrice
     };
   } catch (error) {
-    console.error('Error getting seasonality factor:', error);
+    console.error('Error calculating fuel surcharge:', error);
+    // В случае ошибки возвращаем нулевую надбавку
     return {
-      factor: 1.0,
-      confidence: 0.5
+      amount: 0,
+      percentage: 0,
+      fuelPrice: 0
     };
   }
 }
 
-// Функция для получения региона порта по его ID
-async function getPortRegionById(portId) {
-  try {
-    const result = await pool.query('SELECT region FROM ports WHERE id = $1', [portId]);
-    return result.rows.length > 0 ? result.rows[0].region : 'Unknown';
-  } catch (error) {
-    console.error('Error getting port region:', error);
-    return 'Unknown';
-  }
-}
-
-// Функция для импорта данных о ценах на топливо
-async function importFuelPrices() {
-  try {
-    console.log('Importing fuel prices data...');
-    
-    // Проверка наличия данных в таблице
-    const countQuery = 'SELECT COUNT(*) FROM fuel_prices';
-    const countResult = await pool.query(countQuery);
-    
-    if (countResult.rows[0].count > 0) {
-      console.log('Fuel prices data already exists');
-      return;
-    }
-    
-    // Генерация синтетических данных о ценах на топливо за последние 3 года
-    const endDate = new Date();
-    const startDate = new Date(endDate);
-    startDate.setFullYear(endDate.getFullYear() - 3);
-    
-    // Базовая цена на топливо
-    const basePrice = 600; // Примерная цена на бункерное топливо в долларах за тонну
-    
-    // Массив для хранения сгенерированных данных
-    const fuelPricesData = [];
-    
-    // Генерация данных для каждого месяца
-    let currentDate = new Date(startDate);
-    
-    while (currentDate <= endDate) {
-      // Расчет сезонного коэффициента (топливо дороже зимой)
-      const month = currentDate.getMonth() + 1;
-      const seasonalFactor = getFuelSeasonalFactorForMonth(month);
-      
-      // Расчет годового тренда (рост цен со временем)
-      const yearsSinceStart = (currentDate - startDate) / (365 * 24 * 60 * 60 * 1000);
-      const trendFactor = 1 + yearsSinceStart * 0.05; // 5% рост в год
-      
-      // Добавление случайной вариации
-      const randomFactor = 0.95 + Math.random() * 0.1; // ±5% случайная вариация
-      
-      // Расчет итоговой цены
-      const price = Math.round(basePrice * seasonalFactor * trendFactor * randomFactor);
-      
-      // Форматирование даты
-      const date = currentDate.toISOString().split('T')[0];
-      
-      // Добавление данных в массив
-      fuelPricesData.push({
-        price,
-        date,
-        source: 'synthetic',
-        fuel_type: 'VLSFO'
-      });
-      
-      // Переход к следующему месяцу
-      currentDate.setMonth(currentDate.getMonth() + 1);
-    }
-    
-    // Сохранение сгенерированных данных в базу данных
-    const client = await pool.connect();
-    
-    try {
-      // Начало транзакции
-      await client.query('BEGIN');
-      
-      for (const data of fuelPricesData) {
-        // Вставка данных в таблицу fuel_prices
-        await client.query(
-          `INSERT INTO fuel_prices 
-           (price, date, source, fuel_type) 
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (date, source) 
-           DO NOTHING`,
-          [
-            data.price,
-            data.date,
-            data.source,
-            data.fuel_type
-          ]
-        );
-      }
-      
-      // Завершение транзакции
-      await client.query('COMMIT');
-      
-      console.log(`Generated and saved ${fuelPricesData.length} synthetic fuel prices`);
-    } catch (error) {
-      // Откат транзакции в случае ошибки
-      await client.query('ROLLBACK');
-      console.error('Error saving synthetic fuel prices:', error);
-      // Не пробрасываем ошибку дальше
-    } finally {
-      // Освобождение клиента
-      client.release();
-    }
-  } catch (error) {
-    console.error('Error importing fuel prices:', error);
-    // Не пробрасываем ошибку дальше
-  }
-}
-
-// Функция для получения сезонного коэффициента цены на топливо для месяца
-function getFuelSeasonalFactorForMonth(month) {
-  // Сезонные коэффициенты по месяцам (пик в зимние месяцы)
-  const seasonalFactors = {
-    1: 1.10,  // Январь
-    2: 1.05,  // Февраль
-    3: 1.00,  // Март
-    4: 0.95,  // Апрель
-    5: 0.90,  // Май
-    6: 0.95,  // Июнь
-    7: 1.00,  // Июль
-    8: 1.00,  // Август
-    9: 1.05,  // Сентябрь
-    10: 1.05, // Октябрь
-    11: 1.10, // Ноябрь
-    12: 1.15  // Декабрь
-  };
-  
-  return seasonalFactors[month] || 1.0;
-}
-
-// Функция для получения исторических данных для визуализации
-async function getHistoricalRatesForVisualization(originRegion, destinationRegion, containerType, months) {
+// Функция для получения исторических данных о ценах на топливо
+async function getFuelPriceHistory(months) {
   try {
     // Получение данных за указанное количество месяцев
     const endDate = new Date();
@@ -777,108 +203,335 @@ async function getHistoricalRatesForVisualization(originRegion, destinationRegio
     const query = `
       SELECT 
         date, 
-        AVG(rate) as avg_rate,
+        AVG(price) as avg_price,
         COUNT(*) as data_points
-      FROM historical_rates 
-      WHERE origin_region = $1 
-        AND destination_region = $2 
-        AND container_type = $3
-        AND date >= $4
+      FROM fuel_prices 
+      WHERE date >= $1
       GROUP BY date
       ORDER BY date
     `;
     
     const result = await pool.query(query, [
-      originRegion,
-      destinationRegion,
-      containerType,
       startDate.toISOString().split('T')[0]
     ]);
     
     return result.rows;
   } catch (error) {
-    console.error('Error getting historical rates for visualization:', error);
+    console.error('Error getting fuel price history:', error);
     return [];
   }
 }
 
-// Функция для получения всех коэффициентов сезонности
-async function getAllSeasonalityFactors() {
+// Функция для получения данных о ценах на топливо из внешних источников
+async function fetchFuelPrices() {
+  try {
+    console.log('Fetching fuel prices from external sources...');
+    
+    // В реальном приложении здесь был бы код для получения данных из API
+    // Например, Bunker Index, Ship & Bunker, MABUX и т.д.
+    
+    // Для демонстрации используем моковые данные
+    await fetchMockFuelPrices();
+    
+    console.log('Fuel prices fetched successfully');
+  } catch (error) {
+    console.error('Error fetching fuel prices:', error);
+  }
+}
+
+// Функция для получения моковых данных о ценах на топливо
+async function fetchMockFuelPrices() {
+  try {
+    console.log('Generating mock fuel price data...');
+    
+    // Генерация данных о ценах на топливо за последние 3 месяца
+    const endDate = new Date();
+    const startDate = new Date(endDate);
+    startDate.setMonth(startDate.getMonth() - 3);
+    
+    // Базовая цена на топливо
+    const basePrice = 600; // Примерная цена на VLSFO в долларах за тонну
+    
+    // Массив для хранения сгенерированных данных
+    const fuelPricesData = [];
+    
+    // Генерация данных для каждого дня
+    let currentDate = new Date(startDate);
+    
+    while (currentDate <= endDate) {
+      // Добавление случайной вариации к базовой цене
+      const randomFactor = 0.95 + Math.random() * 0.1; // ±5% случайная вариация
+      
+      // Расчет итоговой цены
+      const price = Math.round(basePrice * randomFactor);
+      
+      // Форматирование даты
+      const date = currentDate.toISOString().split('T')[0];
+      
+      // Добавление данных в массив
+      fuelPricesData.push({
+        price,
+        date,
+        source: 'mock',
+        fuel_type: 'VLSFO'
+      });
+      
+      // Переход к следующему дню
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    // Сохранение сгенерированных данных в базу данных
+    await saveFuelPrices(fuelPricesData);
+    
+    console.log(`Generated and saved ${fuelPricesData.length} mock fuel prices`);
+  } catch (error) {
+    console.error('Error generating mock fuel prices:', error);
+  }
+}
+
+// Функция для сохранения данных о ценах на топливо в базу данных
+async function saveFuelPrices(fuelPrices) {
+  try {
+    const client = await pool.connect();
+    
+    try {
+      // Начало транзакции
+      await client.query('BEGIN');
+      
+      // Проверяем структуру таблицы fuel_prices
+      const columnsQuery = `
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'fuel_prices'
+      `;
+      
+      const columnsResult = await client.query(columnsQuery);
+      const columns = columnsResult.rows.map(row => row.column_name);
+      
+      // Проверяем наличие колонки fuel_type
+      const hasFuelTypeColumn = columns.includes('fuel_type');
+      
+      for (const data of fuelPrices) {
+        // Адаптируем запрос в зависимости от структуры таблицы
+        let query;
+        let params;
+        
+        if (hasFuelTypeColumn) {
+          query = `
+            INSERT INTO fuel_prices 
+            (price, date, source, fuel_type) 
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (date, source) 
+            DO NOTHING
+          `;
+          params = [
+            data.price,
+            data.date,
+            data.source,
+            data.fuel_type || 'VLSFO'  // Значение по умолчанию, если не указано
+          ];
+        } else {
+          query = `
+            INSERT INTO fuel_prices 
+            (price, date, source) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (date, source) 
+            DO NOTHING
+          `;
+          params = [
+            data.price,
+            data.date,
+            data.source
+          ];
+        }
+        
+        await client.query(query, params);
+      }
+      
+      // Завершение транзакции
+      await client.query('COMMIT');
+      
+      console.log(`Saved ${fuelPrices.length} fuel prices`);
+      return true;
+    } catch (error) {
+      // Откат транзакции в случае ошибки
+      await client.query('ROLLBACK');
+      console.error('Error saving fuel prices:', error);
+      // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
+      return false;
+    } finally {
+      // Освобождение клиента
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error in saveFuelPrices:', error);
+    // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
+    return false;
+  }
+}
+
+// Функция для инициализации коэффициентов топливных надбавок
+async function initializeFuelSurchargeFactors() {
+  try {
+    console.log('Initializing fuel surcharge factors...');
+    
+    // Проверка наличия данных в таблице
+    const countQuery = 'SELECT COUNT(*) FROM fuel_surcharge_factors';
+    const countResult = await pool.query(countQuery);
+    
+    if (countResult.rows[0].count > 0) {
+      console.log('Fuel surcharge factors already exist');
+      return;
+    }
+    
+    // Определение коэффициентов топливных надбавок
+    const factors = [
+      {
+        base_price: 500, // Базовая цена на топливо в долларах за тонну
+        price_range: 100, // Диапазон цен для применения коэффициента
+        surcharge_factor: 0.03 // Коэффициент надбавки (3% за каждые 100 долларов)
+      }
+    ];
+    
+    // Сохранение коэффициентов в базу данных
+    const client = await pool.connect();
+    
+    try {
+      // Начало транзакции
+      await client.query('BEGIN');
+      
+      for (const factor of factors) {
+        // Вставка коэффициента в таблицу
+        await client.query(
+          `INSERT INTO fuel_surcharge_factors 
+           (base_price, price_range, surcharge_factor, last_updated) 
+           VALUES ($1, $2, $3, NOW())`,
+          [
+            factor.base_price,
+            factor.price_range,
+            factor.surcharge_factor
+          ]
+        );
+      }
+      
+      // Завершение транзакции
+      await client.query('COMMIT');
+      
+      console.log(`Initialized ${factors.length} fuel surcharge factors`);
+    } catch (error) {
+      // Откат транзакции в случае ошибки
+      await client.query('ROLLBACK');
+      console.error('Error initializing fuel surcharge factors:', error);
+      throw error;
+    } finally {
+      // Освобождение клиента
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error in initializeFuelSurchargeFactors:', error);
+    throw error;
+  }
+}
+
+// Функция для обновления коэффициентов топливных надбавок
+async function updateFuelSurchargeFactors(factors) {
+  try {
+    console.log('Updating fuel surcharge factors...');
+    
+    // Сохранение коэффициентов в базу данных
+    const client = await pool.connect();
+    
+    try {
+      // Начало транзакции
+      await client.query('BEGIN');
+      
+      // Очистка таблицы
+      await client.query('DELETE FROM fuel_surcharge_factors');
+      
+      for (const factor of factors) {
+        // Вставка коэффициента в таблицу
+        await client.query(
+          `INSERT INTO fuel_surcharge_factors 
+           (base_price, price_range, surcharge_factor, last_updated) 
+           VALUES ($1, $2, $3, NOW())`,
+          [
+            factor.base_price,
+            factor.price_range,
+            factor.surcharge_factor
+          ]
+        );
+      }
+      
+      // Завершение транзакции
+      await client.query('COMMIT');
+      
+      console.log(`Updated ${factors.length} fuel surcharge factors`);
+      return true;
+    } catch (error) {
+      // Откат транзакции в случае ошибки
+      await client.query('ROLLBACK');
+      console.error('Error updating fuel surcharge factors:', error);
+      return false;
+    } finally {
+      // Освобождение клиента
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error in updateFuelSurchargeFactors:', error);
+    return false;
+  }
+}
+
+// Функция для получения всех коэффициентов топливных надбавок
+async function getAllFuelSurchargeFactors() {
   try {
     const query = `
       SELECT 
-        origin_region, 
-        destination_region, 
-        month, 
-        seasonality_factor, 
-        confidence,
+        base_price, 
+        price_range, 
+        surcharge_factor,
         last_updated
-      FROM seasonality_factors
-      ORDER BY origin_region, destination_region, month
+      FROM fuel_surcharge_factors
+      ORDER BY base_price
     `;
     
     const result = await pool.query(query);
     return result.rows;
   } catch (error) {
-    console.error('Error getting all seasonality factors:', error);
+    console.error('Error getting all fuel surcharge factors:', error);
     return [];
   }
 }
 
-// Функция для анализа сезонности и расчета коэффициентов
-async function analyzeSeasonalityFactors() {
+// Функция для инициализации и обновления всех данных для расчета топливных надбавок
+async function initializeAndUpdateFuelSurchargeData() {
   try {
-    // Проверка наличия данных в таблице historical_rates
-    const countQuery = 'SELECT COUNT(*) FROM historical_rates';
-    const countResult = await pool.query(countQuery);
-    
-    if (countResult.rows[0].count === 0) {
-      console.log('No historical data available for seasonality analysis');
-      return;
-    }
-    
-    // Анализ сезонности
-    await analyzeSeasonality();
-    
-    return true;
-  } catch (error) {
-    console.error('Error analyzing seasonality factors:', error);
-    return false;
-  }
-}
-
-// Функция для инициализации и обновления всех данных для анализа сезонности
-async function initializeAndUpdateSeasonalityData(generateSynthetic = false) {
-  try {
-    console.log('Initializing and updating seasonality data...');
+    console.log('Initializing and updating fuel surcharge data...');
     
     // Инициализация таблиц
-    await initializeSeasonalityTables();
+    await initializeFuelSurchargeTables();
     
-    // Импорт исторических данных о ставках
-    await importHistoricalRates();
+    // Получение данных о ценах на топливо
+    await fetchFuelPrices();
     
-    // Импорт данных о ценах на топливо
-    await importFuelPrices();
+    // Инициализация коэффициентов топливных надбавок
+    await initializeFuelSurchargeFactors();
     
-    // Анализ сезонности и расчет коэффициентов
-    await analyzeSeasonality();
-    
-    console.log('Seasonality data initialization and update completed');
+    console.log('Fuel surcharge data initialization and update completed');
     return true;
   } catch (error) {
-    console.error('Error initializing and updating seasonality data:', error);
+    console.error('Error initializing and updating fuel surcharge data:', error);
     // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию системы
-    console.log('Continuing system initialization despite seasonality data error');
+    console.log('Continuing system initialization despite fuel surcharge data error');
     return false;
   }
 }
 
 // Экспорт функций
 export default {
-  initializeAndUpdateSeasonalityData,
-  getSeasonalityFactor,
-  getHistoricalRatesForVisualization,
-  getAllSeasonalityFactors,
-  analyzeSeasonalityFactors
+  initializeAndUpdateFuelSurchargeData,
+  calculateFuelSurcharge,
+  getFuelPriceHistory,
+  getAllFuelSurchargeFactors,
+  updateFuelSurchargeFactors
 };
