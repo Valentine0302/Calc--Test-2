@@ -25,18 +25,19 @@ async function initializeSeasonalityTables() {
     await client.query('BEGIN');
     
     // Создание таблицы для хранения исторических данных о ставках
+    // ВАЖНО: Используем origin_port_id и destination_port_id вместо origin_port и destination_port
     await client.query(`
       CREATE TABLE IF NOT EXISTS historical_rates (
         id SERIAL PRIMARY KEY,
-        origin_port VARCHAR(10) NOT NULL,
-        destination_port VARCHAR(10) NOT NULL,
+        origin_port_id VARCHAR(10) NOT NULL,
+        destination_port_id VARCHAR(10) NOT NULL,
         origin_region VARCHAR(50),
         destination_region VARCHAR(50),
         container_type VARCHAR(10) NOT NULL,
         rate NUMERIC NOT NULL,
         date DATE NOT NULL,
         source VARCHAR(50),
-        UNIQUE(origin_port, destination_port, container_type, date, source)
+        UNIQUE(origin_port_id, destination_port_id, container_type, date, source)
       )
     `);
     
@@ -61,6 +62,7 @@ async function initializeSeasonalityTables() {
         price NUMERIC NOT NULL,
         date DATE NOT NULL,
         source VARCHAR(50),
+        fuel_type VARCHAR(50) DEFAULT 'VLSFO',
         UNIQUE(date, source)
       )
     `);
@@ -84,7 +86,8 @@ async function initializeSeasonalityTables() {
     // Откат транзакции в случае ошибки
     await client.query('ROLLBACK');
     console.error('Error initializing seasonality tables:', error);
-    throw error;
+    // Не пробрасываем ошибку дальше, чтобы не прерывать инициализацию
+    console.log('Continuing initialization despite error in seasonality tables');
   } finally {
     // Освобождение клиента
     client.release();
@@ -207,11 +210,12 @@ async function importHistoricalDataFromCalculationHistory() {
         const source = row.sources || 'calculation_history';
         
         // Вставка данных в таблицу historical_rates
+        // ВАЖНО: Используем origin_port_id и destination_port_id вместо origin_port и destination_port
         await client.query(
           `INSERT INTO historical_rates 
-           (origin_port, destination_port, origin_region, destination_region, container_type, rate, date, source) 
+           (origin_port_id, destination_port_id, origin_region, destination_region, container_type, rate, date, source) 
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (origin_port, destination_port, container_type, date, source) 
+           ON CONFLICT (origin_port_id, destination_port_id, container_type, date, source) 
            DO UPDATE SET 
              rate = $6,
              origin_region = $3,
@@ -347,8 +351,8 @@ async function generateSyntheticHistoricalData() {
           
           // Добавление данных в массив
           syntheticData.push({
-            origin_port: route.origin,
-            destination_port: route.destination,
+            origin_port_id: route.origin,
+            destination_port_id: route.destination,
             origin_region: route.originRegion,
             destination_region: route.destinationRegion,
             container_type: containerType,
@@ -372,15 +376,16 @@ async function generateSyntheticHistoricalData() {
       
       for (const data of syntheticData) {
         // Вставка данных в таблицу historical_rates
+        // ВАЖНО: Используем origin_port_id и destination_port_id вместо origin_port и destination_port
         await client.query(
           `INSERT INTO historical_rates 
-           (origin_port, destination_port, origin_region, destination_region, container_type, rate, date, source) 
+           (origin_port_id, destination_port_id, origin_region, destination_region, container_type, rate, date, source) 
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (origin_port, destination_port, container_type, date, source) 
+           ON CONFLICT (origin_port_id, destination_port_id, container_type, date, source) 
            DO NOTHING`,
           [
-            data.origin_port,
-            data.destination_port,
+            data.origin_port_id,
+            data.destination_port_id,
             data.origin_region,
             data.destination_region,
             data.container_type,
@@ -399,12 +404,14 @@ async function generateSyntheticHistoricalData() {
       // Откат транзакции в случае ошибки
       await client.query('ROLLBACK');
       console.error('Error saving synthetic historical rates:', error);
+      // Не пробрасываем ошибку дальше
     } finally {
       // Освобождение клиента
       client.release();
     }
   } catch (error) {
     console.error('Error generating synthetic historical data:', error);
+    // Не пробрасываем ошибку дальше
   }
 }
 
@@ -525,6 +532,7 @@ async function analyzeSeasonality() {
     console.log('Seasonality analysis completed');
   } catch (error) {
     console.error('Error analyzing seasonality:', error);
+    // Не пробрасываем ошибку дальше
   }
 }
 
@@ -551,6 +559,7 @@ async function saveSeasonalityFactor(originRegion, destinationRegion, month, sea
     console.log(`Saved seasonality factor for ${originRegion} → ${destinationRegion}, month ${month}: ${roundedFactor} (confidence: ${confidence})`);
   } catch (error) {
     console.error('Error saving seasonality factor:', error);
+    // Не пробрасываем ошибку дальше
   }
 }
 
@@ -685,7 +694,8 @@ async function importFuelPrices() {
       fuelPricesData.push({
         price,
         date,
-        source: 'synthetic'
+        source: 'synthetic',
+        fuel_type: 'VLSFO'
       });
       
       // Переход к следующему месяцу
@@ -703,14 +713,15 @@ async function importFuelPrices() {
         // Вставка данных в таблицу fuel_prices
         await client.query(
           `INSERT INTO fuel_prices 
-           (price, date, source) 
-           VALUES ($1, $2, $3)
+           (price, date, source, fuel_type) 
+           VALUES ($1, $2, $3, $4)
            ON CONFLICT (date, source) 
            DO NOTHING`,
           [
             data.price,
             data.date,
-            data.source
+            data.source,
+            data.fuel_type
           ]
         );
       }
@@ -723,12 +734,14 @@ async function importFuelPrices() {
       // Откат транзакции в случае ошибки
       await client.query('ROLLBACK');
       console.error('Error saving synthetic fuel prices:', error);
+      // Не пробрасываем ошибку дальше
     } finally {
       // Освобождение клиента
       client.release();
     }
   } catch (error) {
     console.error('Error importing fuel prices:', error);
+    // Не пробрасываем ошибку дальше
   }
 }
 
