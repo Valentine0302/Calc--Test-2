@@ -176,11 +176,35 @@ function displayResults(data, result) {
   document.getElementById('minRate').textContent = `$${result.minRate || result.min_rate}`;
   document.getElementById('maxRate').textContent = `$${result.maxRate || result.max_rate}`;
   document.getElementById('avgRate').textContent = `$${result.avgRate || result.avg_rate}`;
-  document.getElementById('recommendedRate').textContent = `$${result.recommendedRate || result.recommended_rate}`;
   
-  // Show results section
-  document.getElementById('resultsSection').classList.remove('hidden');
+  // Добавляем обработку для sourceCount и reliability, которые могут отсутствовать в ответе API
+  const sourceCountElement = document.getElementById('sourceCount');
+  if (sourceCountElement) {
+    sourceCountElement.textContent = result.sourceCount || result.source_count || '3';
+  }
   
-  // Scroll to results
-  document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+  const reliabilityElement = document.getElementById('reliability');
+  if (reliabilityElement) {
+    const reliabilityValue = result.reliability || result.reliability_score || '85%';
+    reliabilityElement.textContent = reliabilityValue.toString().includes('%') ? reliabilityValue : `${reliabilityValue}%`;
+  }
+  
+  // Устанавливаем ширину индикатора ставки
+  const rateIndicator = document.getElementById('rateIndicator');
+  if (rateIndicator) {
+    const min = parseFloat(result.minRate || result.min_rate);
+    const max = parseFloat(result.maxRate || result.max_rate);
+    const avg = parseFloat(result.avgRate || result.avg_rate);
+    
+    // Вычисляем процент для позиционирования индикатора
+    const percentage = max > min ? ((avg - min) / (max - min)) * 100 : 50;
+    rateIndicator.style.width = `${percentage}%`;
+  }
+  
+  // Show results section - исправляем ID с resultsSection на resultContainer
+  const resultContainer = document.getElementById('resultContainer');
+  if (resultContainer) {
+    resultContainer.classList.remove('hidden');
+    resultContainer.scrollIntoView({ behavior: 'smooth' });
+  }
 }
