@@ -175,7 +175,18 @@ function displayResults(data, result) {
   // Используем правильные имена свойств из ответа API
   document.getElementById('minRate').textContent = `$${result.minRate || result.min_rate}`;
   document.getElementById('maxRate').textContent = `$${result.maxRate || result.max_rate}`;
-  document.getElementById('avgRate').textContent = `$${result.avgRate || result.avg_rate}`;
+  
+  // Исправление для отображения средней ставки - используем свойство 'rate' из ответа API
+  const avgRateElement = document.getElementById('avgRate');
+  if (avgRateElement) {
+    avgRateElement.textContent = `$${result.rate || result.avgRate || result.avg_rate || 0}`;
+  }
+  
+  // Рекомендуемая ставка (если элемент существует)
+  const recommendedRateElement = document.getElementById('recommendedRate');
+  if (recommendedRateElement) {
+    recommendedRateElement.textContent = `$${result.finalRate || result.recommendedRate || result.recommended_rate || result.rate || 0}`;
+  }
   
   // Добавляем обработку для sourceCount и reliability, которые могут отсутствовать в ответе API
   const sourceCountElement = document.getElementById('sourceCount');
@@ -186,25 +197,32 @@ function displayResults(data, result) {
   const reliabilityElement = document.getElementById('reliability');
   if (reliabilityElement) {
     const reliabilityValue = result.reliability || result.reliability_score || '85%';
-    reliabilityElement.textContent = reliabilityValue.toString().includes('%') ? reliabilityValue : `${reliabilityValue}%`;
+    reliabilityElement.textContent = reliabilityValue.toString().includes('%') ? reliabilityValue : `${reliabilityValue * 100}%`;
   }
   
   // Устанавливаем ширину индикатора ставки
   const rateIndicator = document.getElementById('rateIndicator');
   if (rateIndicator) {
-    const min = parseFloat(result.minRate || result.min_rate);
-    const max = parseFloat(result.maxRate || result.max_rate);
-    const avg = parseFloat(result.avgRate || result.avg_rate);
+    const min = parseFloat(result.minRate || result.min_rate || 0);
+    const max = parseFloat(result.maxRate || result.max_rate || 0);
+    const avg = parseFloat(result.rate || result.avgRate || result.avg_rate || 0);
     
     // Вычисляем процент для позиционирования индикатора
-    const percentage = max > min ? ((avg - min) / (max - min)) * 100 : 50;
+    const percentage = (max > min && avg > 0) ? ((avg - min) / (max - min)) * 100 : 50;
     rateIndicator.style.width = `${percentage}%`;
   }
   
-  // Show results section - исправляем ID с resultsSection на resultContainer
+  // Show results section - проверяем наличие элемента с правильным ID
+  const resultsSection = document.getElementById('resultsSection');
   const resultContainer = document.getElementById('resultContainer');
-  if (resultContainer) {
-    resultContainer.classList.remove('hidden');
-    resultContainer.scrollIntoView({ behavior: 'smooth' });
+  
+  // Используем тот элемент, который существует на странице
+  const resultElement = resultsSection || resultContainer;
+  
+  if (resultElement) {
+    resultElement.classList.remove('hidden');
+    resultElement.scrollIntoView({ behavior: 'smooth' });
+  } else {
+    console.error('Results container element not found. Check HTML for resultsSection or resultContainer element.');
   }
 }
