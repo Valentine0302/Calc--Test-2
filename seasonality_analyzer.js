@@ -564,3 +564,20 @@ async function getSeasonalityFactor(originPort, destinationPort, month) {
     const portRegionsResult = await pool.query(portRegionsQuery, [originPort, destinationPort]);
     
     if (!portRegionsResult.rows[0] || !portRegionsResult.rows[0].origin_region || !portRegionsResult.row
+// Экспорт функций
+export {
+  initializeAndUpdateSeasonalityData,
+  getSeasonalityFactor,
+  getAllSeasonalityFactors,
+  getHistoricalRatesForVisualization,
+  analyzeSeasonalityFactors
+};
+
+// Добавляем экспорт по умолчанию
+export default {
+  initializeAndUpdateSeasonalityData,
+  getSeasonalityFactor,
+  getAllSeasonalityFactors,
+  getHistoricalRatesForVisualization,
+  analyzeSeasonalityFactors
+};
