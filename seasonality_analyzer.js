@@ -29,8 +29,8 @@ async function initializeSeasonalityTables() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS historical_rates (
         id SERIAL PRIMARY KEY,
-        origin_port_id VARCHAR(10) NOT NULL,
-        destination_port_id VARCHAR(10) NOT NULL,
+        origin_port VARCHAR(10) NOT NULL,
+        destination_port VARCHAR(10) NOT NULL,
         origin_region VARCHAR(50),
         destination_region VARCHAR(50),
         container_type VARCHAR(10) NOT NULL,
