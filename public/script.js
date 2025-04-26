@@ -189,7 +189,7 @@ function displayResults(data, result) {
     avgRateValue = result.avg_rate;
   } else {
     // Если средняя ставка не найдена в ответе API, вычисляем её как среднее между минимальной и максимальной
-    avgRateValue = (parseFloat(minRateValue) + parseFloat(maxRateValue)) / 2;
+    avgRateValue = Math.round((parseFloat(minRateValue) + parseFloat(maxRateValue)) / 2);
   }
   
   console.log('Rate values:', { minRateValue, maxRateValue, avgRateValue }); // Логируем значения для отладки
@@ -198,13 +198,58 @@ function displayResults(data, result) {
   document.getElementById('minRate').textContent = `$${minRateValue}`;
   document.getElementById('maxRate').textContent = `$${maxRateValue}`;
   
-  // Обновляем среднюю ставку с гарантированным значением
-  const avgRateElement = document.getElementById('avgRate');
-  if (avgRateElement) {
-    avgRateElement.textContent = `$${avgRateValue}`;
-    console.log('Updated avgRate element with:', `$${avgRateValue}`); // Логируем обновление
+  // РАДИКАЛЬНОЕ РЕШЕНИЕ: Полностью заменяем содержимое индикатора ставки
+  const rateIndicatorContainer = document.querySelector('.mb-4');
+  if (rateIndicatorContainer) {
+    // Создаем новую структуру для отображения ставок
+    rateIndicatorContainer.innerHTML = `
+      <p class="text-sm text-gray-500 mb-1">Rate Range (USD)</p>
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium">Min: $${minRateValue}</span>
+        <span class="text-sm font-medium bg-blue-600 text-white px-3 py-1 rounded">Avg: $${avgRateValue}</span>
+        <span class="text-sm font-medium">Max: $${maxRateValue}</span>
+      </div>
+    `;
+    console.log('Replaced rate indicator with new structure');
   } else {
-    console.error('avgRate element not found in DOM'); // Логируем ошибку, если элемент не найден
+    console.error('Rate indicator container not found');
+    
+    // Запасной вариант: если не удалось найти контейнер, пробуем обновить только элемент avgRate
+    const avgRateElement = document.getElementById('avgRate');
+    if (avgRateElement) {
+      avgRateElement.textContent = `$${avgRateValue}`;
+      console.log('Updated avgRate element with:', `$${avgRateValue}`);
+      
+      // Делаем элемент более заметным
+      avgRateElement.style.fontWeight = 'bold';
+      avgRateElement.style.color = 'white';
+      avgRateElement.style.backgroundColor = '#2563eb'; // blue-600
+      avgRateElement.style.padding = '4px 8px';
+      avgRateElement.style.borderRadius = '4px';
+      
+      // Убедимся, что родительский элемент видим
+      const parentElement = avgRateElement.parentElement;
+      if (parentElement) {
+        parentElement.style.visibility = 'visible';
+        parentElement.style.display = 'block';
+      }
+    } else {
+      console.error('avgRate element not found in DOM');
+      
+      // Крайний случай: добавляем информацию о средней ставке в другое место
+      const resultContainer = document.getElementById('resultContainer');
+      if (resultContainer) {
+        const avgRateInfo = document.createElement('div');
+        avgRateInfo.className = 'mt-4 text-center';
+        avgRateInfo.innerHTML = `
+          <p class="text-lg font-bold">
+            Average Rate: <span class="text-blue-600">$${avgRateValue}</span>
+          </p>
+        `;
+        resultContainer.appendChild(avgRateInfo);
+        console.log('Added average rate info as separate element');
+      }
+    }
   }
   
   // Обновляем дополнительную информацию
@@ -223,30 +268,6 @@ function displayResults(data, result) {
       reliabilityValue = `${reliabilityValue}%`;
     }
     reliabilityElement.textContent = reliabilityValue;
-  }
-  
-  // Устанавливаем ширину индикатора ставки
-  const rateIndicator = document.getElementById('rateIndicator');
-  if (rateIndicator) {
-    const min = parseFloat(minRateValue);
-    const max = parseFloat(maxRateValue);
-    const avg = parseFloat(avgRateValue);
-    
-    // Вычисляем процент для позиционирования индикатора
-    let percentage = 50; // По умолчанию в середине
-    if (max > min && !isNaN(avg)) {
-      percentage = ((avg - min) / (max - min)) * 100;
-      // Ограничиваем значение от 0 до 100
-      percentage = Math.max(0, Math.min(100, percentage));
-    }
-    
-    console.log('Setting indicator width to:', `${percentage}%`); // Логируем установку ширины
-    rateIndicator.style.width = `${percentage}%`;
-    
-    // Убедимся, что индикатор видим, установив минимальную ширину
-    if (percentage < 5) {
-      rateIndicator.style.minWidth = '5%';
-    }
   }
   
   // Показываем контейнер с результатами
