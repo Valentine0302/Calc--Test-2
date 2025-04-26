@@ -78,6 +78,86 @@ async function loadContainerTypes() {
         }
         
         const containerTypes = await response.json();
+document.addEventListener('DOMContentLoaded', async () => {
+    // Set current year in footer
+    document.getElementById('currentYear').textContent = new Date().getFullYear();
+    
+    // Load ports and container types
+    await loadPorts();
+    await loadContainerTypes();
+    
+    // Set up form submission
+    const form = document.getElementById('calculatorForm');
+    form.addEventListener('submit', handleFormSubmit);
+});
+
+// Load ports from API
+async function loadPorts() {
+    try {
+        const response = await fetch('/api/ports');
+        if (!response.ok) {
+            throw new Error('Failed to fetch ports');
+        }
+        
+        const ports = await response.json();
+        
+        // Group ports by region
+        const portsByRegion = {};
+        ports.forEach(port => {
+            if (!portsByRegion[port.region]) {
+                portsByRegion[port.region] = [];
+            }
+            portsByRegion[port.region].push(port);
+        });
+        
+        // Populate origin and destination dropdowns
+        const originSelect = document.getElementById('origin');
+        const destinationSelect = document.getElementById('destination');
+        
+        // Clear existing options except the first one
+        originSelect.innerHTML = '<option value="">Select origin port</option>';
+        destinationSelect.innerHTML = '<option value="">Select destination port</option>';
+        
+        // Add ports grouped by region
+        Object.entries(portsByRegion).forEach(([region, regionPorts]) => {
+            const originGroup = document.createElement('optgroup');
+            originGroup.label = region;
+            
+            const destinationGroup = document.createElement('optgroup');
+            destinationGroup.label = region;
+            
+            regionPorts.forEach(port => {
+                // Create option for origin
+                const originOption = document.createElement('option');
+                originOption.value = port.id;
+                originOption.textContent = `${port.name}, ${port.country} (${port.id})`;
+                originGroup.appendChild(originOption);
+                
+                // Create option for destination
+                const destinationOption = document.createElement('option');
+                destinationOption.value = port.id;
+                destinationOption.textContent = `${port.name}, ${port.country} (${port.id})`;
+                destinationGroup.appendChild(destinationOption);
+            });
+            
+            originSelect.appendChild(originGroup);
+            destinationSelect.appendChild(destinationGroup);
+        });
+    } catch (error) {
+        console.error('Error loading ports:', error);
+        alert('Failed to load ports. Please refresh the page and try again.');
+    }
+}
+
+// Load container types from API
+async function loadContainerTypes() {
+    try {
+        const response = await fetch('/api/container-types');
+        if (!response.ok) {
+            throw new Error('Failed to fetch container types');
+        }
+        
+        const containerTypes = await response.json();
         const containerTypeSelect = document.getElementById('containerType');
         
         // Clear existing options except the first one
@@ -191,3 +271,4 @@ function displayResults(data, result) {
     // Scroll to results
     resultContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
