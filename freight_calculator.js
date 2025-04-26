@@ -1,11 +1,11 @@
 // Модуль для агрегации данных из различных источников и расчета ставок фрахта
 // Объединяет данные из SCFI, FBX, WCI и других источников
 
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
-import scfiScraper from './scfi_scraper.js';
-import fbxScraper from './fbx_scraper.js';
-import wciScraper from './wci_scraper.js';
+const { Pool } = require('pg');
+const dotenv = require('dotenv');
+const scfiScraper = require('./scfi_scraper.js');
+const fbxScraper = require('./fbx_scraper.js');
+const wciScraper = require('./wci_scraper.js');
 
 // Загрузка переменных окружения
 dotenv.config();
@@ -31,9 +31,9 @@ const SOURCE_WEIGHTS = {
 };
 
 // Функция для расчета ставки фрахта на основе данных из различных источников
-async function calculateFreightRate(origin, destination, containerType, weight) {
+async function calculateFreightRate(origin, destination, containerType, weight = 20000) {
   try {
-    console.log(`Calculating freight rate for ${origin} to ${destination}, container type: ${containerType}, weight: ${weight || 'not specified'}`);
+    console.log(`Calculating freight rate for ${origin} to ${destination}, container type: ${containerType}, weight: ${weight}kg`);
     
     // Получение данных из различных источников
     const scfiData = await scfiScraper.getSCFIDataForRoute(origin, destination);
@@ -85,18 +85,7 @@ async function calculateFreightRate(origin, destination, containerType, weight) 
       totalWeight += data.weight;
     });
     
-    let baseRate = Math.round(weightedSum / totalWeight);
-    
-    // Применение коэффициента веса, если он указан
-    if (weight && weight > 0) {
-      // Базовая ставка обычно рассчитывается для стандартного веса
-      // Если вес превышает стандартный, применяем надбавку
-      const standardWeight = getStandardWeight(containerType);
-      if (weight > standardWeight) {
-        const weightFactor = 1 + ((weight - standardWeight) / standardWeight) * 0.5; // 50% надбавка за каждую единицу превышения стандартного веса
-        baseRate = Math.round(baseRate * weightFactor);
-      }
-    }
+    const baseRate = Math.round(weightedSum / totalWeight);
     
     // Расчет минимальной и максимальной ставки
     // Используем стандартное отклонение для определения диапазона
@@ -121,15 +110,18 @@ async function calculateFreightRate(origin, destination, containerType, weight) 
     // Надежность: от 0.7 до 1.0, зависит от количества источников и их согласованности
     const reliability = Math.round((0.7 + 0.3 * sourceRatio * (1 - Math.min(cv, 0.5) / 0.5)) * 100) / 100;
     
+    // Применение корректировки на основе веса
+    const weightAdjustedRate = adjustRateByWeight(baseRate, weight, containerType);
+    
     // Формирование результата
     const result = {
-      rate: baseRate,
-      minRate: minRate,
-      maxRate: maxRate,
+      rate: weightAdjustedRate,
+      minRate: Math.round(minRate * (weightAdjustedRate / baseRate)),
+      maxRate: Math.round(maxRate * (weightAdjustedRate / baseRate)),
       reliability: reliability,
       sourceCount: sourceCount,
       sources: sourcesData.map(data => data.source),
-      finalRate: baseRate // Добавляем finalRate для совместимости с API
+      finalRate: weightAdjustedRate // Добавляем для совместимости с API
     };
     
     console.log('Calculation result:', result);
@@ -142,37 +134,62 @@ async function calculateFreightRate(origin, destination, containerType, weight) 
   }
 }
 
-// Функция для получения стандартного веса для типа контейнера
-function getStandardWeight(containerType) {
-  const standardWeights = {
-    '20DV': 20000, // 20 тонн для 20-футового контейнера
-    '40DV': 25000, // 25 тонн для 40-футового контейнера
-    '40HC': 27000, // 27 тонн для 40-футового high cube
-    '45HC': 28000  // 28 тонн для 45-футового high cube
-  };
-  
-  return standardWeights[containerType] || 20000; // По умолчанию 20 тонн
+// Функция для корректировки ставки на основе веса
+function adjustRateByWeight(baseRate, weight, containerType) {
+  try {
+    // Стандартные веса для разных типов контейнеров (в кг)
+    const standardWeights = {
+      '20DV': 20000, // 20 тонн для 20-футового контейнера
+      '40DV': 25000, // 25 тонн для 40-футового контейнера
+      '40HC': 25000, // 25 тонн для 40-футового high cube
+      '45HC': 27000  // 27 тонн для 45-футового high cube
+    };
+    
+    // Если тип контейнера неизвестен, используем стандартный вес 20 тонн
+    const standardWeight = standardWeights[containerType] || 20000;
+    
+    // Если вес не указан или меньше 1000 кг, используем стандартный вес
+    if (!weight || weight < 1000) {
+      return baseRate;
+    }
+    
+    // Расчет коэффициента корректировки
+    // Если вес меньше стандартного, ставка немного снижается
+    // Если вес больше стандартного, ставка увеличивается пропорционально
+    let adjustmentFactor = 1.0;
+    
+    if (weight < standardWeight) {
+      // Снижение до 10% для легких грузов
+      const weightRatio = weight / standardWeight;
+      adjustmentFactor = 0.9 + (0.1 * weightRatio);
+    } else if (weight > standardWeight) {
+      // Увеличение до 30% для тяжелых грузов
+      const excessRatio = Math.min(1.0, (weight - standardWeight) / standardWeight);
+      adjustmentFactor = 1.0 + (0.3 * excessRatio);
+    }
+    
+    // Применение коэффициента корректировки
+    return Math.round(baseRate * adjustmentFactor);
+  } catch (error) {
+    console.error('Error adjusting rate by weight:', error);
+    // В случае ошибки возвращаем исходную ставку
+    return baseRate;
+  }
 }
 
 // Функция для базового расчета ставки фрахта (используется, если нет данных из источников)
-function calculateBaseRate(origin, destination, containerType, weight) {
+function calculateBaseRate(origin, destination, containerType, weight = 20000) {
   // Базовая ставка: случайное число от 1000 до 3000
-  let baseRate = Math.round(Math.random() * 2000 + 1000);
+  const baseRate = Math.round(Math.random() * 2000 + 1000);
   
-  // Применение коэффициента веса, если он указан
-  if (weight && weight > 0) {
-    const standardWeight = getStandardWeight(containerType);
-    if (weight > standardWeight) {
-      const weightFactor = 1 + ((weight - standardWeight) / standardWeight) * 0.5;
-      baseRate = Math.round(baseRate * weightFactor);
-    }
-  }
+  // Применение корректировки на основе веса
+  const weightAdjustedRate = adjustRateByWeight(baseRate, weight, containerType);
   
   // Минимальная ставка: 80% от базовой
-  const minRate = Math.round(baseRate * 0.8);
+  const minRate = Math.round(weightAdjustedRate * 0.8);
   
   // Максимальная ставка: 120% от базовой
-  const maxRate = Math.round(baseRate * 1.2);
+  const maxRate = Math.round(weightAdjustedRate * 1.2);
   
   // Надежность: от 0.7 до 0.9
   const reliability = Math.round((Math.random() * 0.2 + 0.7) * 100) / 100;
@@ -181,13 +198,13 @@ function calculateBaseRate(origin, destination, containerType, weight) {
   const sourceCount = Math.floor(Math.random() * 3) + 1;
   
   return {
-    rate: baseRate,
+    rate: weightAdjustedRate,
     minRate: minRate,
     maxRate: maxRate,
     reliability: reliability,
     sourceCount: sourceCount,
     sources: ['Base calculation'],
-    finalRate: baseRate // Добавляем finalRate для совместимости с API
+    finalRate: weightAdjustedRate // Добавляем для совместимости с API
   };
 }
 
@@ -226,35 +243,8 @@ async function updateAllSourcesData() {
   }
 }
 
-// Функция для получения истории расчетов
-async function getCalculationHistory() {
-  try {
-    const query = `
-      SELECT 
-        ch.id,
-        p1.name as origin_port_name,
-        p2.name as destination_port_name,
-        ch.container_type,
-        ch.rate,
-        ch.created_at
-      FROM calculation_history ch
-      JOIN ports p1 ON ch.origin_port_id = p1.id
-      JOIN ports p2 ON ch.destination_port_id = p2.id
-      ORDER BY ch.created_at DESC
-      LIMIT 100
-    `;
-    
-    const result = await pool.query(query);
-    return result.rows;
-  } catch (error) {
-    console.error('Error getting calculation history:', error);
-    return [];
-  }
-}
-
-// Экспорт функций
-export default {
+// Экспорт функций в формате CommonJS
+module.exports = {
   calculateFreightRate,
-  updateAllSourcesData,
-  getCalculationHistory
+  updateAllSourcesData
 };
