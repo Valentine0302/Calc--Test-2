@@ -3,9 +3,9 @@
 
 const { Pool } = require('pg');
 const dotenv = require('dotenv');
-const scfiScraper = require('./scfi_scraper_commonjs.js');
+const scfiScraper = require('./scfi_scraper.js');
 const fbxScraper = require('./fbx_scraper.js');
-const wciScraper = require('./wci_scraper_commonjs.js');
+const wciScraper = require('./wci_scraper.js');
 
 // Загрузка переменных окружения
 dotenv.config();
