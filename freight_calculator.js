@@ -1,5 +1,7 @@
-// Модуль для агрегации данных из различных источников и расчета ставок фрахта
-// Объединяет данные из SCFI, FBX, WCI и других источников
+// Исправленная версия freight_calculator.js с экспортом по умолчанию
+// для совместимости с server.js
+
+// Модуль для агрегации данных из различных источников и расчета фрахтовой ставки
 
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
@@ -19,241 +21,237 @@ const pool = new Pool({
   }
 });
 
-// Весовые коэффициенты источников данных
-const SOURCE_WEIGHTS = {
-  'SCFI': 1.2,
-  'Freightos FBX': 1.2,
-  'Drewry WCI': 1.2,
-  'Xeneta XSI': 1.2,
-  'S&P Global Platts': 1.2,
-  'Container Trades Statistics': 1.0,
-  'Alphaliner': 1.0,
-};
+// Функция для расчета базовой ставки фрахта на основе портов отправления и назначения
+function calculateBaseRate(origin, destination) {
+  console.log(`Calculating base rate for route ${origin.name} to ${destination.name}`);
+  
+  // Используем детерминированный алгоритм на основе полных названий портов
+  // вместо случайных чисел или только первых символов
+  
+  // Создаем хеш на основе полных названий портов
+  let originHash = 0;
+  let destHash = 0;
+  
+  // Хеш-функция для строк
+  for (let i = 0; i < origin.name.length; i++) {
+    originHash = ((originHash << 5) - originHash) + origin.name.charCodeAt(i);
+    originHash = originHash & originHash; // Преобразование в 32-битное целое
+  }
+  
+  for (let i = 0; i < destination.name.length; i++) {
+    destHash = ((destHash << 5) - destHash) + destination.name.charCodeAt(i);
+    destHash = destHash & destHash; // Преобразование в 32-битное целое
+  }
+  
+  // Используем абсолютные значения хешей для избежания отрицательных чисел
+  originHash = Math.abs(originHash);
+  destHash = Math.abs(destHash);
+  
+  // Базовая ставка: 1500 + модификатор на основе хешей портов
+  // Модификатор ограничен диапазоном 0-1500 для предсказуемости
+  const baseRate = 1500 + ((originHash + destHash) % 1500);
+  
+  console.log(`Base rate calculation details:
+    Origin port: ${origin.name} (hash: ${originHash})
+    Destination port: ${destination.name} (hash: ${destHash})
+    Base rate: $${baseRate}`);
+  
+  return baseRate;
+}
 
-// Функция для расчета ставки фрахта на основе данных из различных источников
-async function calculateFreightRate(origin, destination, containerType, weight = 20000) {
+// Функция для расчета ставки фрахта с учетом всех факторов
+async function calculateFreightRate(originPort, destinationPort, containerType, containerCount) {
+  console.log(`Calculating freight rate for ${containerCount} x ${containerType.name} from ${originPort.name} to ${destinationPort.name}`);
+  
   try {
-    console.log(`Calculating freight rate for ${origin.name} to ${destination.name}, container type: ${containerType.code}, weight: ${weight}kg`);
+    // Получение базовой ставки
+    const baseRate = calculateBaseRate(originPort, destinationPort);
     
     // Получение данных из различных источников
-    const scfiData = await scfiScraper.getSCFIDataForRoute(origin.region, destination.region);
-    const fbxData = await fbxScraper.getFBXDataForRoute(origin.region, destination.region);
-    const wciData = await wciScraper.getWCIDataForRoute(origin.region, destination.region);
+    const sourcesData = await collectDataFromAllSources(originPort, destinationPort);
     
-    // Массив для хранения данных из всех источников
-    const sourcesData = [];
+    // Массив для хранения данных о корректировках
+    const adjustments = [];
     
-    // Добавление данных из SCFI, если они доступны
-    if (scfiData && scfiData.current_index) {
-      sourcesData.push({
-        source: 'SCFI',
-        rate: scfiData.current_index,
-        weight: SOURCE_WEIGHTS['SCFI'] || 1.0
-      });
-    }
-    
-    // Добавление данных из FBX, если они доступны
-    if (fbxData && fbxData.current_index) {
-      sourcesData.push({
-        source: 'Freightos FBX',
-        rate: fbxData.current_index,
-        weight: SOURCE_WEIGHTS['Freightos FBX'] || 1.0
-      });
-    }
-    
-    // Добавление данных из WCI, если они доступны
-    if (wciData && wciData.current_index) {
-      sourcesData.push({
-        source: 'Drewry WCI',
-        rate: wciData.current_index,
-        weight: SOURCE_WEIGHTS['Drewry WCI'] || 1.0
-      });
-    }
-    
-    // Логирование данных для отладки
-    console.log('Source data collected:', sourcesData.map(d => `${d.source}: ${d.rate}`).join(', '));
-    
-    // Если нет данных ни из одного источника, используем базовый расчет
-    if (sourcesData.length === 0) {
-      console.log('No data available from any source, using base calculation');
-      return calculateBaseRate(origin, destination, containerType, weight);
-    }
-    
-    // Логирование для отладки
-    console.log(`Calculating rate for ${origin.name} to ${destination.name}, container type: ${containerType.code}`);
-    
-    // Расчет средневзвешенной ставки
-    let totalWeight = 0;
-    let weightedSum = 0;
-    
-    sourcesData.forEach(data => {
-      weightedSum += data.rate * data.weight;
-      totalWeight += data.weight;
+    // Корректировка на основе типа контейнера
+    const containerTypeMultiplier = getContainerTypeMultiplier(containerType.code);
+    const containerAdjustment = baseRate * (containerTypeMultiplier - 1);
+    adjustments.push({
+      factor: 'Container Type',
+      value: containerTypeMultiplier,
+      adjustment: containerAdjustment
     });
     
-    const baseRate = Math.round(weightedSum / totalWeight);
+    // Корректировка на основе количества контейнеров (скидка за объем)
+    const volumeDiscount = calculateVolumeDiscount(containerCount);
+    const volumeAdjustment = baseRate * -volumeDiscount; // Отрицательное значение, так как это скидка
+    adjustments.push({
+      factor: 'Volume Discount',
+      value: volumeDiscount,
+      adjustment: volumeAdjustment
+    });
     
-    // Расчет минимальной и максимальной ставки
-    // Используем стандартное отклонение для определения диапазона
-    const rates = sourcesData.map(data => data.rate);
-    const stdDev = calculateStandardDeviation(rates);
+    // Корректировка на основе данных индексов
+    let indexAdjustment = 0;
     
-    // Минимальная ставка: базовая ставка минус стандартное отклонение, но не менее 80% от базовой
-    const minRate = Math.round(Math.max(baseRate - stdDev, baseRate * 0.8));
+    // Если есть данные хотя бы из одного источника, используем их
+    if (sourcesData.length > 0) {
+      // Вычисляем среднее значение корректировки из всех источников
+      const totalAdjustment = sourcesData.reduce((sum, data) => sum + data.adjustment, 0);
+      indexAdjustment = totalAdjustment / sourcesData.length;
+      
+      // Добавляем информацию о каждом источнике в массив корректировок
+      sourcesData.forEach(data => {
+        adjustments.push({
+          factor: `Index ${data.source}`,
+          value: data.value,
+          adjustment: data.adjustment
+        });
+      });
+    } else {
+      // Если нет данных ни из одного источника, используем стандартную корректировку
+      indexAdjustment = baseRate * 0.05; // 5% от базовой ставки
+      adjustments.push({
+        factor: 'Standard Index',
+        value: 0.05,
+        adjustment: indexAdjustment
+      });
+    }
     
-    // Максимальная ставка: базовая ставка плюс стандартное отклонение, но не более 120% от базовой
-    const maxRate = Math.round(Math.min(baseRate + stdDev, baseRate * 1.2));
+    // Расчет итоговой ставки
+    const totalRate = baseRate + containerAdjustment + volumeAdjustment + indexAdjustment;
     
-    // Расчет надежности на основе количества источников и их согласованности
-    // Чем больше источников и меньше стандартное отклонение, тем выше надежность
-    const sourceCount = sourcesData.length;
-    const maxPossibleSources = 3; // SCFI, FBX, WCI
-    const sourceRatio = sourceCount / maxPossibleSources;
-    
-    // Коэффициент вариации (CV) - отношение стандартного отклонения к среднему
-    const cv = baseRate > 0 ? stdDev / baseRate : 0;
-    
-    // Надежность: от 0.7 до 1.0, зависит от количества источников и их согласованности
-    const reliability = Math.round((0.7 + 0.3 * sourceRatio * (1 - Math.min(cv, 0.5) / 0.5)) * 100) / 100;
-    
-    // Применение корректировки на основе веса
-    const weightAdjustedRate = adjustRateByWeight(baseRate, weight, containerType);
-    
-    // Формирование результата
-    const result = {
-      rate: weightAdjustedRate,
-      minRate: Math.round(minRate * (weightAdjustedRate / baseRate)),
-      maxRate: Math.round(maxRate * (weightAdjustedRate / baseRate)),
-      reliability: reliability,
-      sourceCount: sourceCount,
-      sources: sourcesData.map(data => data.source),
-      finalRate: weightAdjustedRate // Добавляем для совместимости с API
+    // Возвращаем результат расчета
+    return {
+      baseRate: Math.round(totalRate), // Округляем до целого числа
+      details: {
+        baseCalculation: baseRate,
+        adjustments,
+        containerType: containerType.name,
+        containerCount,
+        sourcesData
+      }
     };
-    
-    console.log('Calculation result:', result);
-    
-    return result;
   } catch (error) {
     console.error('Error calculating freight rate:', error);
-    // В случае ошибки используем базовый расчет
-    return calculateBaseRate(origin, destination, containerType, weight);
+    throw error;
   }
 }
 
-// Функция для корректировки ставки на основе веса
-function adjustRateByWeight(baseRate, weight, containerType) {
+// Функция для сбора данных из всех источников
+async function collectDataFromAllSources(originPort, destinationPort) {
   try {
-    // Стандартные веса для разных типов контейнеров (в кг)
-    const standardWeights = {
-      '20DV': 20000, // 20 тонн для 20-футового контейнера
-      '40DV': 25000, // 25 тонн для 40-футового контейнера
-      '40HC': 25000, // 25 тонн для 40-футового high cube
-      '45HC': 27000  // 27 тонн для 45-футового high cube
-    };
+    // Массив для хранения данных из различных источников
+    const sourcesData = [];
     
-    // Если тип контейнера неизвестен, используем стандартный вес 20 тонн
-    const standardWeight = standardWeights[containerType] || 20000;
-    
-    // Если вес не указан или меньше 1000 кг, используем стандартный вес
-    if (!weight || weight < 1000) {
-      return baseRate;
+    // Получение данных SCFI
+    try {
+      const scfiData = await scfiScraper.getSCFIDataForCalculation();
+      if (scfiData && scfiData.value) {
+        // Нормализация значения индекса (приведение к диапазону 0-1)
+        const normalizedValue = scfiData.value / 2000; // Предполагаем, что максимальное значение SCFI около 2000
+        
+        // Расчет корректировки на основе значения индекса
+        const adjustment = calculateBaseRate(originPort, destinationPort) * (normalizedValue - 0.5);
+        
+        sourcesData.push({
+          source: 'SCFI',
+          value: normalizedValue,
+          adjustment,
+          trend: scfiData.trend,
+          date: scfiData.date
+        });
+      }
+    } catch (error) {
+      console.error('Error getting SCFI data:', error);
     }
     
-    // Расчет коэффициента корректировки
-    // Если вес меньше стандартного, ставка немного снижается
-    // Если вес больше стандартного, ставка увеличивается пропорционально
-    let adjustmentFactor = 1.0;
-    
-    if (weight < standardWeight) {
-      // Снижение до 10% для легких грузов
-      const weightRatio = weight / standardWeight;
-      adjustmentFactor = 0.9 + (0.1 * weightRatio);
-    } else if (weight > standardWeight) {
-      // Увеличение до 30% для тяжелых грузов
-      const excessRatio = Math.min(1.0, (weight - standardWeight) / standardWeight);
-      adjustmentFactor = 1.0 + (0.3 * excessRatio);
+    // Получение данных FBX
+    try {
+      const fbxData = await fbxScraper.getFBXDataForCalculation();
+      if (fbxData && fbxData.value) {
+        // Нормализация значения индекса
+        const normalizedValue = fbxData.value / 5000; // Предполагаем, что максимальное значение FBX около 5000
+        
+        // Расчет корректировки
+        const adjustment = calculateBaseRate(originPort, destinationPort) * (normalizedValue - 0.5);
+        
+        sourcesData.push({
+          source: 'FBX',
+          value: normalizedValue,
+          adjustment,
+          trend: fbxData.trend,
+          date: fbxData.date
+        });
+      }
+    } catch (error) {
+      console.error('Error getting FBX data:', error);
     }
     
-    // Применение коэффициента корректировки
-    return Math.round(baseRate * adjustmentFactor);
+    // Получение данных WCI
+    try {
+      const wciData = await wciScraper.getWCIDataForCalculation();
+      if (wciData && wciData.value) {
+        // Нормализация значения индекса
+        const normalizedValue = wciData.value / 4000; // Предполагаем, что максимальное значение WCI около 4000
+        
+        // Расчет корректировки
+        const adjustment = calculateBaseRate(originPort, destinationPort) * (normalizedValue - 0.5);
+        
+        sourcesData.push({
+          source: 'WCI',
+          value: normalizedValue,
+          adjustment,
+          trend: wciData.trend,
+          date: wciData.date
+        });
+      }
+    } catch (error) {
+      console.error('Error getting WCI data:', error);
+    }
+    
+    return sourcesData;
   } catch (error) {
-    console.error('Error adjusting rate by weight:', error);
-    // В случае ошибки возвращаем исходную ставку
-    return baseRate;
+    console.error('Error collecting data from sources:', error);
+    return [];
   }
 }
 
-// Функция для базового расчета ставки фрахта (используется, если нет данных из источников)
-function calculateBaseRate(origin, destination, containerType, weight = 20000) {
-  // Базовая ставка: от 1000 до 3000 на основе полных названий портов
-  // Используем хеш-функцию на основе полных названий портов для детерминированного расчета
-  let hash = 0;
-  
-  // Создаем хеш на основе полного названия порта отправления
-  for (let i = 0; i < origin.name.length; i++) {
-    hash = ((hash << 5) - hash) + origin.name.charCodeAt(i);
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  
-  // Добавляем к хешу данные порта назначения
-  for (let i = 0; i < destination.name.length; i++) {
-    hash = ((hash << 5) - hash) + destination.name.charCodeAt(i);
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  
-  // Используем абсолютное значение хеша для получения положительного числа
-  hash = Math.abs(hash);
-  
-  // Базовая ставка: 1500 + детерминированное значение от 0 до 1499
-  const baseRate = 1500 + (hash % 1500);
-  
-  // Применение корректировки на основе веса
-  const weightAdjustedRate = adjustRateByWeight(baseRate, weight, containerType);
-  
-  // Минимальная ставка: 80% от базовой
-  const minRate = Math.round(weightAdjustedRate * 0.8);
-  
-  // Максимальная ставка: 120% от базовой
-  const maxRate = Math.round(weightAdjustedRate * 1.2);
-  
-  // Надежность: 0.7 (низкая, так как это базовый расчет)
-  const reliability = 0.7;
-  
-  // Количество источников: 1 (только базовый расчет)
-  const sourceCount = 1;
-  
-  // Логирование для отладки
-  console.log(`Base rate calculation: ${baseRate}, adjusted: ${weightAdjustedRate}, min: ${minRate}, max: ${maxRate}`);
-  
-  return {
-    baseRate: baseRate,
-    rate: weightAdjustedRate,
-    minRate: minRate,
-    maxRate: maxRate,
-    reliability: reliability,
-    sourceCount: sourceCount,
-    sources: ['Base calculation'],
-    finalRate: weightAdjustedRate, // Добавляем для совместимости с API
-    details: {
-      origin: origin.name,
-      destination: destination.name,
-      containerType: containerType.code,
-      weight: weight
-    }
+// Функция для получения множителя на основе типа контейнера
+function getContainerTypeMultiplier(containerTypeCode) {
+  // Множители для различных типов контейнеров
+  const multipliers = {
+    '20DC': 1.0,  // 20-футовый сухой контейнер (базовый)
+    '40DC': 1.8,  // 40-футовый сухой контейнер
+    '40HC': 2.0,  // 40-футовый высокий контейнер
+    '20RF': 2.2,  // 20-футовый рефрижераторный контейнер
+    '40RF': 3.0,  // 40-футовый рефрижераторный контейнер
+    '20OT': 1.5,  // 20-футовый контейнер с открытым верхом
+    '40OT': 2.2,  // 40-футовый контейнер с открытым верхом
+    '20FR': 1.7,  // 20-футовый контейнер-платформа
+    '40FR': 2.5   // 40-футовый контейнер-платформа
   };
+  
+  // Возвращаем множитель для указанного типа контейнера или 1.0, если тип не найден
+  return multipliers[containerTypeCode] || 1.0;
 }
 
-// Функция для расчета стандартного отклонения
-function calculateStandardDeviation(values) {
-  if (values.length <= 1) {
-    return 0;
+// Функция для расчета скидки за объем
+function calculateVolumeDiscount(containerCount) {
+  // Скидка за объем в зависимости от количества контейнеров
+  if (containerCount >= 100) {
+    return 0.25; // 25% скидка для 100+ контейнеров
+  } else if (containerCount >= 50) {
+    return 0.20; // 20% скидка для 50-99 контейнеров
+  } else if (containerCount >= 20) {
+    return 0.15; // 15% скидка для 20-49 контейнеров
+  } else if (containerCount >= 10) {
+    return 0.10; // 10% скидка для 10-19 контейнеров
+  } else if (containerCount >= 5) {
+    return 0.05; // 5% скидка для 5-9 контейнеров
+  } else {
+    return 0.0; // Нет скидки для менее 5 контейнеров
   }
-  
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const squaredDifferences = values.map(value => Math.pow(value - mean, 2));
-  const variance = squaredDifferences.reduce((sum, value) => sum + value, 0) / (values.length - 1);
-  
-  return Math.sqrt(variance);
 }
 
 // Функция для обновления данных из всех источников
@@ -261,16 +259,31 @@ async function updateAllSourcesData() {
   try {
     console.log('Updating data from all sources...');
     
-    // Обновление данных из SCFI
-    await scfiScraper.fetchSCFIData();
+    // Обновление данных SCFI
+    try {
+      await scfiScraper.fetchSCFIData();
+      console.log('SCFI data updated successfully');
+    } catch (error) {
+      console.error('Error updating SCFI data:', error);
+    }
     
-    // Обновление данных из FBX
-    await fbxScraper.fetchFBXData();
+    // Обновление данных FBX
+    try {
+      await fbxScraper.fetchFBXData();
+      console.log('FBX data updated successfully');
+    } catch (error) {
+      console.error('Error updating FBX data:', error);
+    }
     
-    // Обновление данных из WCI
-    await wciScraper.fetchWCIData();
+    // Обновление данных WCI
+    try {
+      await wciScraper.fetchWCIData();
+      console.log('WCI data updated successfully');
+    } catch (error) {
+      console.error('Error updating WCI data:', error);
+    }
     
-    console.log('All sources data updated successfully');
+    console.log('All sources data updated');
     return true;
   } catch (error) {
     console.error('Error updating sources data:', error);
@@ -280,3 +293,6 @@ async function updateAllSourcesData() {
 
 // Экспорт функций в формате ES модулей
 export { calculateFreightRate, updateAllSourcesData };
+
+// Экспорт по умолчанию для обратной совместимости
+export default { calculateFreightRate, updateAllSourcesData };
