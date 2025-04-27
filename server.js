@@ -9,9 +9,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 // Импорт модулей скраперов для различных индексов
-import scfiScraper from './scfi_scraper.js';
-import fbxScraper from './fbx_scraper.js';
-import wciScraper from './wci_scraper.js';
+// Используем динамический импорт для проблемных скраперов
+let scfiScraper, fbxScraper, wciScraper;
+
+// Импорт остальных скраперов, которые работают корректно
 import bdiScraper from './bdi_scraper.js';
 import ccfiScraper from './ccfi_scraper.js';
 import harpexScraper from './harpex_scraper.js';
@@ -54,6 +55,22 @@ app.use(express.static(path.join(__dirname, 'public')));
 async function initializeSystem() {
   try {
     console.log('Initializing enhanced freight calculator system...');
+    
+    // Динамический импорт проблемных скраперов
+    try {
+      const scfiModule = await import('./scfi_scraper.js');
+      scfiScraper = scfiModule.default || scfiModule;
+      
+      const fbxModule = await import('./fbx_scraper.js');
+      fbxScraper = fbxModule.default || fbxModule;
+      
+      const wciModule = await import('./wci_scraper.js');
+      wciScraper = wciModule.default || wciModule;
+      
+      console.log('Successfully imported all scrapers');
+    } catch (error) {
+      console.error('Error importing scrapers:', error);
+    }
     
     // Инициализация модуля анализа сезонности
     await seasonalityAnalyzer.initializeAndUpdateSeasonalityData(false); // false - не генерировать синтетические данные при первом запуске
@@ -214,45 +231,51 @@ app.get('/api/indices', async (req, res) => {
     const indices = {};
     
     // SCFI
-    try {
-      const scfiData = await scfiScraper.getSCFIDataForCalculation();
-      if (scfiData) {
-        indices.SCFI = {
-          currentIndex: scfiData.current_index,
-          change: scfiData.change,
-          indexDate: scfiData.index_date
-        };
+    if (scfiScraper) {
+      try {
+        const scfiData = await scfiScraper.getSCFIDataForCalculation();
+        if (scfiData) {
+          indices.SCFI = {
+            currentIndex: scfiData.current_index,
+            change: scfiData.change,
+            indexDate: scfiData.index_date
+          };
+        }
+      } catch (error) {
+        console.error('Error fetching SCFI data:', error);
       }
-    } catch (error) {
-      console.error('Error fetching SCFI data:', error);
     }
     
     // FBX
-    try {
-      const fbxData = await fbxScraper.getFBXDataForCalculation();
-      if (fbxData) {
-        indices.FBX = {
-          currentIndex: fbxData.current_index,
-          change: fbxData.change,
-          indexDate: fbxData.index_date
-        };
+    if (fbxScraper) {
+      try {
+        const fbxData = await fbxScraper.getFBXDataForCalculation();
+        if (fbxData) {
+          indices.FBX = {
+            currentIndex: fbxData.current_index,
+            change: fbxData.change,
+            indexDate: fbxData.index_date
+          };
+        }
+      } catch (error) {
+        console.error('Error fetching FBX data:', error);
       }
-    } catch (error) {
-      console.error('Error fetching FBX data:', error);
     }
     
     // WCI
-    try {
-      const wciData = await wciScraper.getWCIDataForCalculation();
-      if (wciData) {
-        indices.WCI = {
-          currentIndex: wciData.current_index,
-          change: wciData.change,
-          indexDate: wciData.index_date
-        };
+    if (wciScraper) {
+      try {
+        const wciData = await wciScraper.getWCIDataForCalculation();
+        if (wciData) {
+          indices.WCI = {
+            currentIndex: wciData.current_index,
+            change: wciData.change,
+            indexDate: wciData.index_date
+          };
+        }
+      } catch (error) {
+        console.error('Error fetching WCI data:', error);
       }
-    } catch (error) {
-      console.error('Error fetching WCI data:', error);
     }
     
     // BDI
@@ -352,27 +375,33 @@ app.post('/api/update-indices', async (req, res) => {
     const results = {};
     
     // Обновление данных SCFI
-    try {
-      const scfiData = await scfiScraper.fetchSCFIData();
-      results.SCFI = { success: true, count: scfiData.length };
-    } catch (error) {
-      results.SCFI = { success: false, error: error.message };
+    if (scfiScraper) {
+      try {
+        const scfiData = await scfiScraper.fetchSCFIData();
+        results.SCFI = { success: true, count: scfiData.length };
+      } catch (error) {
+        results.SCFI = { success: false, error: error.message };
+      }
     }
     
     // Обновление данных FBX
-    try {
-      const fbxData = await fbxScraper.fetchFBXData();
-      results.FBX = { success: true, count: fbxData.length };
-    } catch (error) {
-      results.FBX = { success: false, error: error.message };
+    if (fbxScraper) {
+      try {
+        const fbxData = await fbxScraper.fetchFBXData();
+        results.FBX = { success: true, count: fbxData.length };
+      } catch (error) {
+        results.FBX = { success: false, error: error.message };
+      }
     }
     
     // Обновление данных WCI
-    try {
-      const wciData = await wciScraper.fetchWCIData();
-      results.WCI = { success: true, count: wciData.length };
-    } catch (error) {
-      results.WCI = { success: false, error: error.message };
+    if (wciScraper) {
+      try {
+        const wciData = await wciScraper.fetchWCIData();
+        results.WCI = { success: true, count: wciData.length };
+      } catch (error) {
+        results.WCI = { success: false, error: error.message };
+      }
     }
     
     // Обновление данных BDI
@@ -743,40 +772,31 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
-// Функция для сохранения запроса в историю
+// Вспомогательная функция для проверки формата email
+function validateEmail(email) {
+  const re = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  return re.test(String(email).toLowerCase());
+}
+
+// Вспомогательная функция для сохранения запроса в историю
 async function saveRequestToHistory(originPort, destinationPort, containerType, weight, rate, email) {
   try {
-    // Проверка существования таблицы request_history
-    const tableCheckResult = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_name = 'request_history'
-      )
-    `);
+    // Проверка, верифицирован ли email
+    const emailResult = await pool.query('SELECT * FROM verified_emails WHERE email = $1', [email]);
     
-    // Если таблица не существует, создаем ее
-    if (!tableCheckResult.rows[0].exists) {
-      await pool.query(`
-        CREATE TABLE request_history (
-          id SERIAL PRIMARY KEY,
-          origin_port_id VARCHAR(10) NOT NULL,
-          destination_port_id VARCHAR(10) NOT NULL,
-          container_type VARCHAR(10) NOT NULL,
-          weight INTEGER NOT NULL,
-          rate NUMERIC NOT NULL,
-          email VARCHAR(255) NOT NULL,
-          request_date TIMESTAMP NOT NULL DEFAULT NOW(),
-          FOREIGN KEY (origin_port_id) REFERENCES ports(id),
-          FOREIGN KEY (destination_port_id) REFERENCES ports(id)
-        )
-      `);
+    // Если email не верифицирован, добавляем его в таблицу
+    if (emailResult.rows.length === 0) {
+      await pool.query(
+        'INSERT INTO verified_emails (email, verified) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING',
+        [email, true]
+      );
     }
     
     // Сохранение запроса в историю
     await pool.query(
       `INSERT INTO request_history 
-       (origin_port_id, destination_port_id, container_type, weight, rate, email) 
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       (origin_port_id, destination_port_id, container_type, weight, rate, email, request_date) 
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [
         originPort,
         destinationPort,
@@ -787,25 +807,20 @@ async function saveRequestToHistory(originPort, destinationPort, containerType, 
       ]
     );
     
-    console.log('Request saved to history');
+    console.log(`Saved request to history for email: ${email}`);
   } catch (error) {
     console.error('Error saving request to history:', error);
     // Ошибка сохранения истории не должна прерывать основной процесс
   }
 }
 
-// Функция для валидации email
-function validateEmail(email) {
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(email);
-}
-
 // Запуск сервера
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Инициализация системы при запуске сервера
+  // Инициализация системы при запуске
   await initializeSystem();
 });
 
+// Экспорт для тестирования
 export default app;
